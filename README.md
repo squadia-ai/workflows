@@ -21,10 +21,11 @@ O trabalho pesado (rodar o papel, decidir concurrency, exportar credenciais para
 | `dev.yml` | Dev | `issue_key` (required), `image`, `instance`, `timeout_minutes` (default 75) | `squadia-dev-<issue_key>` |
 | `review.yml` | Revisor | `issue_key` (required), `image`, `instance`, `timeout_minutes` (default 75) | `squadia-review-<issue_key>` |
 | `qa-scenarios.yml` | QA (gerador de cenários) | `issue_key` (required), `image`, `instance`, `timeout_minutes` (default 75) | `squadia-qa-scenarios-<issue_key>` |
-| `orchestrate-worker.yml` | Orquestrador | `free_workflows` (CSV de `refine,dev,review,qa_scenarios`, default `""`), `image`, `instance`, `timeout_minutes` (default 20) | `squadia-orchestrator` (fixo, sem issue) |
+| `qa-execute.yml` | QA (executor — build/testes/merge) | `issue_key` (required), `image`, `instance`, `timeout_minutes` (default 75) | `squadia-qa-execute-<issue_key>` |
+| `orchestrate-worker.yml` | Orquestrador | `free_workflows` (CSV de `refine,dev,review,qa_scenarios,qa`, default `""`), `image`, `instance`, `timeout_minutes` (default 20) | `squadia-orchestrator` (fixo, sem issue) |
 | `orchestrate-dispatcher.yml` | Pré-check do orquestrador | `worker_workflow` (default `orchestrate.yml`), `agent_workflows` (CSV de pares `papel:arquivo`, default `refine:refine-agent.yml,dev:dev-agent.yml,review:review-agent.yml`) | `squadia-dispatcher` (fixo) |
 
-Os cinco primeiros rodam dentro de um `container:` com a imagem do core (contrato de entrypoints abaixo). O `orchestrate-dispatcher.yml` é diferente de propósito: roda **sem container, sem Docker e sem LLM**, direto no runner `ubuntu-latest` — é só um pré-check barato (via `actions/github-script`) para decidir se vale a pena acordar o worker do orquestrador, olhando quais workflows já estão `in_progress`/`queued` no repo. O worker sempre revalida ocupação, rate-limit e pausa por conta própria antes de agir (defesa em profundidade) — o dispatcher é otimização de custo, não fonte de verdade.
+Os seis primeiros rodam dentro de um `container:` com a imagem do core (contrato de entrypoints abaixo). O `orchestrate-dispatcher.yml` é diferente de propósito: roda **sem container, sem Docker e sem LLM**, direto no runner `ubuntu-latest` — é só um pré-check barato (via `actions/github-script`) para decidir se vale a pena acordar o worker do orquestrador, olhando quais workflows já estão `in_progress`/`queued` no repo. O worker sempre revalida ocupação, rate-limit e pausa por conta própria antes de agir (defesa em profundidade) — o dispatcher é otimização de custo, não fonte de verdade.
 
 ### Contrato com a imagem do core
 
@@ -36,7 +37,8 @@ Os cinco primeiros rodam dentro de um `container:` com a imagem do core (contrat
   - `node /app/dist/entrypoints/dev.js <ISSUE-KEY> [--instance NOME]`
   - `node /app/dist/entrypoints/review.js <ISSUE-KEY> [--instance NOME]`
   - `node /app/dist/entrypoints/qa-scenarios.js <ISSUE-KEY> [--instance NOME]`
-  - `node /app/dist/entrypoints/orchestrate.js [--free refine,dev,review,qa_scenarios] [--instance NOME]`
+  - `node /app/dist/entrypoints/qa-execute.js <ISSUE-KEY> [--instance NOME]`
+  - `node /app/dist/entrypoints/orchestrate.js [--free refine,dev,review,qa_scenarios,qa] [--instance NOME]`
 
 ### Contrato de ambiente dos entrypoints
 
@@ -114,7 +116,7 @@ on:
   workflow_dispatch:
     inputs:
       free:
-        description: "CSV dos papeis livres (refine,dev,review,qa_scenarios); vazio = revalidar todos"
+        description: "CSV dos papeis livres (refine,dev,review,qa_scenarios,qa); vazio = revalidar todos"
         type: string
         default: ""
 
