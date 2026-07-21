@@ -1,2 +1,146 @@
 # workflows
-squadia — reusable workflows (encanamento de execução dos agentes)
+
+Reusable workflows do squadia — o "encanamento" público de execução dos agentes IA (refinador, dev, revisor, orquestrador) sobre issues Jira e repos GitHub de cada tenant.
+
+Este repositório é **público** e não contém nenhuma lógica de negócio, prompt, IP do produto ou dado de cliente. Ele só define o *contrato* de execução: como um repo "ops" de um tenant deve chamar a imagem privada do core (`ghcr.io/squadia-ai/core`) via GitHub Actions, e como os secrets/config daquele tenant chegam até o container. Toda a inteligência (prompts, orquestração, integrações) vive no core, numa imagem Docker privada — não aqui.
+
+## Como funciona (visão geral)
+
+Cada tenant tem um repo "ops" (privado, do cliente) com:
+- `squadia.config.yml` e `CLAUDE.md` na raiz;
+- GitHub Secrets/Variables com credenciais do tenant (ver seção abaixo);
+- stubs de workflow curtos em `.github/workflows/`, que apenas fazem `uses:` para um dos workflows deste repo, com `secrets: inherit`.
+
+O trabalho pesado (rodar o papel, decidir concurrency, exportar credenciais para o processo) acontece dentro do workflow reusable, dentro de um container rodando a imagem privada do core.
+
+## Workflows disponíveis
+
+| Arquivo | Papel | Principais inputs | Concurrency group |
+|---|---|---|---|
+| `refine.yml` | Refinador | `issue_key` (required), `image` (default `ghcr.io/squadia-ai/core:v0`), `instance`, `timeout_minutes` (default 45) | `squadia-refine-<issue_key>` |
+| `dev.yml` | Dev | `issue_key` (required), `image`, `instance`, `timeout_minutes` (default 45) | `squadia-dev-<issue_key>` |
+| `review.yml` | Revisor | `issue_key` (required), `image`, `instance`, `timeout_minutes` (default 45) | `squadia-review-<issue_key>` |
+| `orchestrate-worker.yml` | Orquestrador | `free_workflows` (CSV de `refine,dev,review`, default `""`), `image`, `instance`, `timeout_minutes` (default 20) | `squadia-orchestrator` (fixo, sem issue) |
+| `orchestrate-dispatcher.yml` | Pré-check do orquestrador | `worker_workflow` (default `orchestrate.yml`), `agent_workflows` (CSV de pares `papel:arquivo`, default `refine:refine-agent.yml,dev:dev-agent.yml,review:review-agent.yml`) | `squadia-dispatcher` (fixo) |
+
+Os quatro primeiros rodam dentro de um `container:` com a imagem do core (contrato de entrypoints abaixo). O `orchestrate-dispatcher.yml` é diferente de propósito: roda **sem container, sem Docker e sem LLM**, direto no runner `ubuntu-latest` — é só um pré-check barato (via `actions/github-script`) para decidir se vale a pena acordar o worker do orquestrador, olhando quais workflows já estão `in_progress`/`queued` no repo. O worker sempre revalida ocupação, rate-limit e pausa por conta própria antes de agir (defesa em profundidade) — o dispatcher é otimização de custo, não fonte de verdade.
+
+### Contrato com a imagem do core
+
+- Imagem default: `ghcr.io/squadia-ai/core:v0` (privada no GHCR; pull autenticado com o secret `GHCR_PULL_TOKEN`).
+- Dentro do container: `WORKDIR /app`, Node 22, `git` e `bash` disponíveis, core já compilado em `/app/dist`.
+- Base Debian/glibc (**não** Alpine/musl): em container jobs, as actions JavaScript (`actions/checkout`, `github-script`) executam com o Node do runner montado dentro do container, que exige glibc.
+- Comando por papel:
+  - `node /app/dist/entrypoints/refine.js <ISSUE-KEY> [--instance NOME]`
+  - `node /app/dist/entrypoints/dev.js <ISSUE-KEY> [--instance NOME]`
+  - `node /app/dist/entrypoints/review.js <ISSUE-KEY> [--instance NOME]`
+  - `node /app/dist/entrypoints/orchestrate.js [--free refine,dev,review] [--instance NOME]`
+
+### Contrato de ambiente dos entrypoints
+
+O checkout do repo **caller** (o ops do tenant) é quem fornece `squadia.config.yml` e `CLAUDE.md` na raiz. Os workflows deste repo exportam as seguintes env vars antes de chamar o entrypoint:
+
+| Env var | Origem |
+|---|---|
+| `SQUADIA_CONFIG_PATH` | fixo: `squadia.config.yml` (path no checkout do caller) |
+| `TENANT_CLAUDE_MD_PATH` | fixo: `CLAUDE.md` (opcional, path no checkout do caller) |
+| `WORKSPACE_DIR` | fixo: `/tmp/squadia-workspace` (dir de trabalho dos clones que o entrypoint faz) |
+| `JIRA_BASE_URL` | `vars.JIRA_BASE_URL` do repo caller (Actions **Variable**, não secret) |
+| `ISSUE_KEY` / `INSTANCE` / `FREE` | dos inputs do workflow_call |
+| credenciais (`JIRA_EMAIL_<SUF>`, etc.) | Secrets do repo caller, herdados via `secrets: inherit` e reexportados para o ambiente do processo (ver abaixo) |
+
+Os sufixos de instância (`<SUF>`) variam por tenant, então o workflow não tenta enumerá-los: em vez disso, cada workflow tem um passo "Exporta secrets do tenant" que lê `toJSON(secrets)`, itera todas as entradas recebidas via `secrets: inherit` e escreve cada uma em `GITHUB_ENV` usando o formato heredoc do GitHub Actions (obrigatório porque `GH_APP_PRIVATE_KEY_<SUF>` é um PEM multiline). Duas chaves são sempre excluídas dessa exportação: `github_token` (o token automático do Actions) e `GHCR_PULL_TOKEN` (usado só para o pull da imagem, não deve vazar pro processo do entrypoint).
+
+### Regra de segurança
+
+Nenhum workflow deste repo interpola `${{ inputs.* }}`, `${{ vars.* }}` ou `${{ secrets.* }}` diretamente dentro de um bloco `run:`. Todo dado externo entra via `env:` e é lido do ambiente (`$VAR`) dentro do script — isso evita injeção de shell via valores controlados por config/secret. Expressões `${{ }}` só aparecem em campos estruturados do YAML (`image`, `concurrency.group`, `timeout-minutes`, `container.credentials`, `env:`).
+
+## Contrato do stub no repo ops
+
+Um workflow de papel no ops do tenant é só um gatilho (ex.: em resposta a um evento/label do Jira, ou dispatch manual) chamando o reusable workflow correspondente:
+
+```yaml
+# .github/workflows/dev-agent.yml (no repo ops do tenant)
+name: Dev agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_key:
+        required: true
+        type: string
+
+jobs:
+  dev:
+    uses: squadia-ai/workflows/.github/workflows/dev.yml@v0
+    with:
+      issue_key: ${{ inputs.issue_key }}
+      instance: "" # ou o sufixo, se o tenant tiver múltiplas instâncias
+    secrets: inherit
+```
+
+O orquestrador usa **dois stubs**: o cron roda só o dispatcher (pré-check barato), e o worker fica num arquivo próprio que o dispatcher acorda via `workflow_dispatch` quando há papel livre (economizando execuções do worker/imagem):
+
+```yaml
+# .github/workflows/orchestrate-cron.yml (no repo ops do tenant)
+name: Orchestrate cron
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  dispatch-check:
+    uses: squadia-ai/workflows/.github/workflows/orchestrate-dispatcher.yml@v0
+    with:
+      worker_workflow: orchestrate.yml
+      agent_workflows: refine:refine-agent.yml,dev:dev-agent.yml,review:review-agent.yml
+    secrets: inherit
+```
+
+```yaml
+# .github/workflows/orchestrate.yml (no repo ops do tenant)
+name: Orchestrate
+
+on:
+  workflow_dispatch:
+    inputs:
+      free:
+        description: "CSV dos papeis livres (refine,dev,review); vazio = revalidar todos"
+        type: string
+        default: ""
+
+jobs:
+  orchestrate:
+    uses: squadia-ai/workflows/.github/workflows/orchestrate-worker.yml@v0
+    with:
+      free_workflows: ${{ inputs.free }}
+    secrets: inherit
+```
+
+O nome do stub do worker (`orchestrate.yml` acima) é o valor que o tenant passa em `worker_workflow` no dispatcher — é ele quem o dispatcher vai "acordar" quando achar que vale a pena. O dispatch manual do worker (aba Actions → Run workflow) também funciona e bypassa o dispatcher — o worker revalida tudo sozinho.
+
+## Secrets e vars esperados no repo ops
+
+Actions **Variable** (não secret), no repo caller:
+
+- `JIRA_BASE_URL` — URL base da instância Jira do tenant.
+
+Actions **Secrets**, com sufixo `<SUF>` por conjunto de credenciais (ex.: `DEV`, `LT`, `QA` — uma identidade IA por papel, ADR-005). O sufixo é declarado no campo `credentials` de cada instância do `squadia.config.yml` — **não** é o input `instance` dos stubs, que carrega o *nome* da instância do papel (útil só quando um papel tem mais de uma instância):
+
+- `JIRA_EMAIL_<SUF>`
+- `JIRA_API_TOKEN_<SUF>`
+- `GH_APP_ID_<SUF>`
+- `GH_APP_PRIVATE_KEY_<SUF>` (PEM multiline)
+- `GH_INSTALLATION_ID_<SUF>`
+- `CLAUDE_CODE_OAUTH_TOKEN_<SUF>`
+
+Além dessas, um secret sem sufixo, usado só para autenticar o pull da imagem privada do core:
+
+- `GHCR_PULL_TOKEN`
+
+Todos esses secrets chegam aos workflows reusable via `secrets: inherit` no stub do ops — nada precisa ser declarado nome a nome neste repo.
+
+## Versionamento
+
+Os stubs do ops referenciam este repo por tag, ex.: `squadia-ai/workflows/.github/workflows/dev.yml@v0`. Na fase F1, `@v0` é uma tag **móvel** (reapontada para o commit mais recente da `develop` considerado estável) — não há garantia de compatibilidade estrita ainda. Tags imutáveis por versão semântica (`@v1`, `@v2`, ...) ficam para uma fase posterior, quando o contrato estabilizar.
