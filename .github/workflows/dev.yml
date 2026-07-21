@@ -26,9 +26,16 @@ on:
         type: string
         default: ""
       timeout_minutes:
+        # Invariante (SQD-52): este timeout tem que ser MAIOR que o
+        # claudeTimeoutMinutes do core (default 60 min, fora deste repo).
+        # Se o job estourar antes do Claude CLI, o runner mata o processo
+        # sem deixar o wrapper do core capturar o erro e rodar o tratamento
+        # ruidoso (job summary, redação de segredos — SQD-9): falha "suja",
+        # sem diagnóstico. 75 min dá folga sobre os 60 do core para esse
+        # tratamento rodar depois do estouro.
         description: "Timeout do job, em minutos"
         type: number
-        default: 45
+        default: 75
 
 jobs:
   agent:

@@ -17,9 +17,9 @@ O trabalho pesado (rodar o papel, decidir concurrency, exportar credenciais para
 
 | Arquivo | Papel | Principais inputs | Concurrency group |
 |---|---|---|---|
-| `refine.yml` | Refinador | `issue_key` (required), `image` (default `ghcr.io/squadia-ai/core:v0`), `instance`, `timeout_minutes` (default 45) | `squadia-refine-<issue_key>` |
-| `dev.yml` | Dev | `issue_key` (required), `image`, `instance`, `timeout_minutes` (default 45) | `squadia-dev-<issue_key>` |
-| `review.yml` | Revisor | `issue_key` (required), `image`, `instance`, `timeout_minutes` (default 45) | `squadia-review-<issue_key>` |
+| `refine.yml` | Refinador | `issue_key` (required), `image` (default `ghcr.io/squadia-ai/core:v0`), `instance`, `timeout_minutes` (default 75) | `squadia-refine-<issue_key>` |
+| `dev.yml` | Dev | `issue_key` (required), `image`, `instance`, `timeout_minutes` (default 75) | `squadia-dev-<issue_key>` |
+| `review.yml` | Revisor | `issue_key` (required), `image`, `instance`, `timeout_minutes` (default 75) | `squadia-review-<issue_key>` |
 | `orchestrate-worker.yml` | Orquestrador | `free_workflows` (CSV de `refine,dev,review`, default `""`), `image`, `instance`, `timeout_minutes` (default 20) | `squadia-orchestrator` (fixo, sem issue) |
 | `orchestrate-dispatcher.yml` | Pré-check do orquestrador | `worker_workflow` (default `orchestrate.yml`), `agent_workflows` (CSV de pares `papel:arquivo`, default `refine:refine-agent.yml,dev:dev-agent.yml,review:review-agent.yml`) | `squadia-dispatcher` (fixo) |
 
