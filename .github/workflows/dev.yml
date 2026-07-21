@@ -33,6 +33,11 @@ on:
 jobs:
   agent:
     runs-on: ubuntu-latest
+    # Container jobs podem cair em sh (dash) como shell default; os scripts
+    # destes workflows usam bash (contrato da imagem garante bash presente).
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: ${{ inputs.timeout_minutes }}
     concurrency:
       group: squadia-dev-${{ inputs.issue_key }}
