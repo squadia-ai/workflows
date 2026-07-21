@@ -47,9 +47,15 @@ O checkout do repo **caller** (o ops do tenant) é quem fornece `squadia.config.
 | `WORKSPACE_DIR` | fixo: `/tmp/squadia-workspace` (dir de trabalho dos clones que o entrypoint faz) |
 | `JIRA_BASE_URL` | `vars.JIRA_BASE_URL` do repo caller (Actions **Variable**, não secret) |
 | `ISSUE_KEY` / `INSTANCE` / `FREE` | dos inputs do workflow_call |
-| credenciais (`JIRA_EMAIL_<SUF>`, etc.) | Secrets do repo caller, herdados via `secrets: inherit` e reexportados para o ambiente do processo (ver abaixo) |
+| credenciais não sensíveis (`GH_APP_ID_<SUF>`, `GH_INSTALLATION_ID_<SUF>`, `JIRA_EMAIL_<SUF>`, etc.) | Actions **Variables** do repo caller, reexportadas para o ambiente do processo (ver abaixo) |
+| credenciais sensíveis (`JIRA_API_TOKEN_<SUF>`, `GH_APP_PRIVATE_KEY_<SUF>`, `CLAUDE_CODE_OAUTH_TOKEN_<SUF>`, etc.) | Secrets do repo caller, herdados via `secrets: inherit` e reexportados para o ambiente do processo (ver abaixo) |
 
-Os sufixos de instância (`<SUF>`) variam por tenant, então o workflow não tenta enumerá-los: em vez disso, cada workflow tem um passo "Exporta secrets do tenant" que lê `toJSON(secrets)`, itera todas as entradas recebidas via `secrets: inherit` e escreve cada uma em `GITHUB_ENV` usando o formato heredoc do GitHub Actions (obrigatório porque `GH_APP_PRIVATE_KEY_<SUF>` é um PEM multiline). Duas chaves são sempre excluídas dessa exportação: `github_token` (o token automático do Actions) e `GHCR_PULL_TOKEN` (usado só para o pull da imagem, não deve vazar pro processo do entrypoint).
+Os sufixos de instância (`<SUF>`) variam por tenant, então o workflow não tenta enumerá-los: em vez disso, cada workflow tem dois passos, nesta ordem:
+
+1. **"Exporta variables do tenant"**: lê `toJSON(vars)`, itera todas as entradas do repo caller e escreve cada uma em `GITHUB_ENV` usando o formato heredoc do GitHub Actions. Variables não têm lista de exclusão (não existe equivalente a `github_token`/`GHCR_PULL_TOKEN` no contexto `vars`).
+2. **"Exporta secrets do tenant"**: lê `toJSON(secrets)`, itera todas as entradas recebidas via `secrets: inherit` e escreve cada uma em `GITHUB_ENV` do mesmo jeito (heredoc obrigatório porque `GH_APP_PRIVATE_KEY_<SUF>` é um PEM multiline). Duas chaves são sempre excluídas dessa exportação: `github_token` (o token automático do Actions) e `GHCR_PULL_TOKEN` (usado só para o pull da imagem, não deve vazar pro processo do entrypoint).
+
+A ordem importa: variables primeiro, secrets depois. Se um tenant tiver, por engano ou por transição, uma Variable e um Secret com o mesmo nome, o secret vence — porque escreve por último em `GITHUB_ENV`, cuja regra é "a última atribuição pra uma chave numa mesma execução ganha". Credenciais não sensíveis do tenant (ex.: `GH_APP_ID_<SUF>`, `GH_INSTALLATION_ID_<SUF>`, `JIRA_EMAIL_<SUF>`) podem viver em Actions Variables — chegam ao ambiente do processo do mesmo jeito que os secrets. Credenciais sensíveis (tokens, chaves privadas) devem ficar em Actions Secrets. Em ambos os casos, o processo do entrypoint não diferencia a origem: só enxerga a env var já exportada.
 
 ### Regra de segurança
 
@@ -122,24 +128,26 @@ O nome do stub do worker (`orchestrate.yml` acima) é o valor que o tenant passa
 
 ## Secrets e vars esperados no repo ops
 
-Actions **Variable** (não secret), no repo caller:
+Credenciais do tenant, com sufixo `<SUF>` por conjunto (ex.: `DEV`, `LT`, `QA` — uma identidade IA por papel, ADR-005). O sufixo é declarado no campo `credentials` de cada instância do `squadia.config.yml` — **não** é o input `instance` dos stubs, que carrega o *nome* da instância do papel (útil só quando um papel tem mais de uma instância). A escolha entre Variable e Secret é por sensibilidade: credenciais não sensíveis vão em Actions **Variables**; credenciais sensíveis (tokens, chaves privadas) vão em Actions **Secrets**. Ambas chegam ao ambiente do processo do mesmo jeito (ver "Contrato de ambiente dos entrypoints" acima).
+
+Actions **Variables** (não sensíveis), no repo caller:
 
 - `JIRA_BASE_URL` — URL base da instância Jira do tenant.
-
-Actions **Secrets**, com sufixo `<SUF>` por conjunto de credenciais (ex.: `DEV`, `LT`, `QA` — uma identidade IA por papel, ADR-005). O sufixo é declarado no campo `credentials` de cada instância do `squadia.config.yml` — **não** é o input `instance` dos stubs, que carrega o *nome* da instância do papel (útil só quando um papel tem mais de uma instância):
-
 - `JIRA_EMAIL_<SUF>`
-- `JIRA_API_TOKEN_<SUF>`
 - `GH_APP_ID_<SUF>`
-- `GH_APP_PRIVATE_KEY_<SUF>` (PEM multiline)
 - `GH_INSTALLATION_ID_<SUF>`
+
+Actions **Secrets** (sensíveis), no repo caller:
+
+- `JIRA_API_TOKEN_<SUF>`
+- `GH_APP_PRIVATE_KEY_<SUF>` (PEM multiline)
 - `CLAUDE_CODE_OAUTH_TOKEN_<SUF>`
 
 Além dessas, um secret sem sufixo, usado só para autenticar o pull da imagem privada do core:
 
 - `GHCR_PULL_TOKEN`
 
-Todos esses secrets chegam aos workflows reusable via `secrets: inherit` no stub do ops — nada precisa ser declarado nome a nome neste repo.
+Todos esses secrets/variables chegam aos workflows reusable via `secrets: inherit` no stub do ops — nada precisa ser declarado nome a nome neste repo. (Variables de um repo GitHub Actions ficam disponíveis a todo workflow do repo automaticamente, sem equivalente a `secrets: inherit`; a menção aqui é só para deixar explícito que este repo as consome via `toJSON(vars)`.)
 
 ## Versionamento
 

@@ -57,6 +57,28 @@ jobs:
       - name: Checkout do repo caller (ops do tenant)
         uses: actions/checkout@v4
 
+      # Ordem importa: variables primeiro, secrets depois. Se houver colisao
+      # de nome entre uma Variable e um Secret do tenant, o secret vence
+      # porque escreve por ultimo no GITHUB_ENV.
+      - name: Exporta variables do tenant
+        env:
+          VARS_CONTEXT: ${{ toJSON(vars) }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const vars = JSON.parse(process.env.VARS_CONTEXT || "{}");
+            const delimiter = "__SQUADIA_EOF__";
+            const envFile = process.env.GITHUB_ENV;
+            for (const [key, value] of Object.entries(vars)) {
+              const strValue = String(value);
+              if (strValue.split("\n").includes(delimiter)) {
+                console.error("Erro: a variable " + key + " contem uma linha igual ao delimitador do heredoc (" + delimiter + "); abortando para nao corromper o GITHUB_ENV.");
+                process.exit(1);
+              }
+              fs.appendFileSync(envFile, key + "<<" + delimiter + "\n" + strValue + "\n" + delimiter + "\n");
+            }
+          '
+
       - name: Exporta secrets do tenant
         env:
           SECRETS_CONTEXT: ${{ toJSON(secrets) }}
