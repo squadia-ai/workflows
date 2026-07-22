@@ -31,11 +31,13 @@ on:
         # Se o job estourar antes do Claude CLI, o runner mata o processo
         # sem deixar o wrapper do core capturar o erro e rodar o tratamento
         # ruidoso (job summary, redação de segredos — SQD-9): falha "suja",
-        # sem diagnóstico. 75 min dá folga sobre os 60 do core para esse
-        # tratamento rodar depois do estouro.
+        # sem diagnóstico. Default aumentado pra 160min (2026-07-21): este
+        # workflow é o único que pode rodar DOIS Claude CLI em sequência no
+        # mesmo job — o refinador encadeia o Quig (gerador de cenários) direto
+        # ao terminar, cada um até claudeTimeoutMinutes (60min) no pior caso.
         description: "Timeout do job, em minutos"
         type: number
-        default: 75
+        default: 160
 
 jobs:
   agent:
