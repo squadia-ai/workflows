@@ -47,6 +47,14 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
+      # OIDC (ADR-015): necessário pro step "Configura credenciais AWS"
+      # trocar o token do job por uma role via
+      # aws-actions/configure-aws-credentials — sem isto o step falha com
+      # "Error: Unable to get ACTIONS_ID_TOKEN_REQUEST_URL env variable"
+      # mesmo com AWS_DATAPLANE_ROLE_ARN configurado. O stub caller no ops
+      # do tenant precisa declarar a mesma permissão (um caller nunca repassa
+      # mais do que concede a si próprio).
+      id-token: write
     container:
       image: ${{ inputs.image }}
       credentials:
@@ -104,6 +112,21 @@ jobs:
               fs.appendFileSync(envFile, key + "<<" + delimiter + "\n" + strValue + "\n" + delimiter + "\n");
             }
           '
+
+      # Opcional (ADR-015): só roda quando o tenant tem a role de dataplane
+      # configurada (AWS_DATAPLANE_ROLE_ARN). Sem a variable, nenhum step AWS
+      # executa e o comportamento continua igual ao de antes desta credencial
+      # existir — retrocompatível com tenants sem AWS. As env vars temporárias
+      # (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_SESSION_TOKEN) que a action
+      # gera são exportadas por ela mesma via GITHUB_ENV, chegando ao ambiente
+      # do processo do entrypoint no step seguinte pelo mesmo mecanismo do
+      # GITHUB_ENV já usado nos dois steps de export acima.
+      - name: Configura credenciais AWS (OIDC)
+        if: vars.AWS_DATAPLANE_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DATAPLANE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Executa o orquestrador
         env:
