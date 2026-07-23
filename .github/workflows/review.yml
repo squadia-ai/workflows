@@ -1,7 +1,7 @@
 name: Squadia - Review (reusable)
 
 # Reusable workflow chamado pelo repo "ops" de um tenant via:
-#   uses: squadia-ai/workflows/.github/workflows/review.yml@v0
+#   uses: squadia-ai/workflows/.github/workflows/review.yml@dev
 #   secrets: inherit
 #
 # Roda o papel "revisor" dentro da imagem privada do core squadia.
@@ -20,7 +20,7 @@ on:
       image:
         description: "Imagem Docker do core squadia usada para rodar o papel"
         type: string
-        default: "ghcr.io/squadia-ai/core:v0"
+        default: "ghcr.io/squadia-ai/core:dev"
       instance:
         description: "Nome da instancia do papel na squadia.config.yml (default: a primeira)"
         type: string

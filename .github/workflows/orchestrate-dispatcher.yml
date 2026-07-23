@@ -1,7 +1,7 @@
 name: Squadia - Orchestrate Dispatcher (reusable)
 
 # Reusable workflow chamado pelo repo "ops" de um tenant via:
-#   uses: squadia-ai/workflows/.github/workflows/orchestrate-dispatcher.yml@v0
+#   uses: squadia-ai/workflows/.github/workflows/orchestrate-dispatcher.yml@dev
 #   secrets: inherit
 #
 # Este e um PRE-CHECK BARATO: roda a cada tick do cron do tenant, sem

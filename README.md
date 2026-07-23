@@ -17,7 +17,7 @@ O trabalho pesado (rodar o papel, decidir concurrency, exportar credenciais para
 
 | Arquivo | Papel | Principais inputs | Concurrency group |
 |---|---|---|---|
-| `refine.yml` | Refinador | `issue_key` (required), `image` (default `ghcr.io/squadia-ai/core:v0`), `instance`, `timeout_minutes` (default 75) | `squadia-refine-<issue_key>` |
+| `refine.yml` | Refinador | `issue_key` (required), `image` (default `ghcr.io/squadia-ai/core:dev`), `instance`, `timeout_minutes` (default 75) | `squadia-refine-<issue_key>` |
 | `dev.yml` | Dev | `issue_key` (required), `image`, `instance`, `timeout_minutes` (default 75) | `squadia-dev-<issue_key>` |
 | `review.yml` | Revisor | `issue_key` (required), `image`, `instance`, `timeout_minutes` (default 75) | `squadia-review-<issue_key>` |
 | `qa-scenarios.yml` | QA (gerador de cenários) | `issue_key` (required), `image`, `instance`, `timeout_minutes` (default 75) | `squadia-qa-scenarios-<issue_key>` |
@@ -31,7 +31,7 @@ Os seis primeiros também declaram `permissions: id-token: write` no job (além 
 
 ### Contrato com a imagem do core
 
-- Imagem default: `ghcr.io/squadia-ai/core:v0` (privada no GHCR; pull autenticado com o secret `GHCR_PULL_TOKEN`).
+- Imagem default: `ghcr.io/squadia-ai/core:dev` (privada no GHCR; pull autenticado com o secret `GHCR_PULL_TOKEN`).
 - Dentro do container: `WORKDIR /app`, Node 22, `git` e `bash` disponíveis, core já compilado em `/app/dist`.
 - Base Debian/glibc (**não** Alpine/musl): em container jobs, as actions JavaScript (`actions/checkout`, `github-script`) executam com o Node do runner montado dentro do container, que exige glibc.
 - Comando por papel:
@@ -101,7 +101,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: squadia-ai/workflows/.github/workflows/dev.yml@v0
+    uses: squadia-ai/workflows/.github/workflows/dev.yml@dev
     with:
       issue_key: ${{ inputs.issue_key }}
       instance: "" # ou o sufixo, se o tenant tiver múltiplas instâncias
@@ -120,7 +120,7 @@ on:
 
 jobs:
   dispatch-check:
-    uses: squadia-ai/workflows/.github/workflows/orchestrate-dispatcher.yml@v0
+    uses: squadia-ai/workflows/.github/workflows/orchestrate-dispatcher.yml@dev
     with:
       worker_workflow: orchestrate.yml
       agent_workflows: refine:refine-agent.yml,dev:dev-agent.yml,review:review-agent.yml
@@ -146,7 +146,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: squadia-ai/workflows/.github/workflows/orchestrate-worker.yml@v0
+    uses: squadia-ai/workflows/.github/workflows/orchestrate-worker.yml@dev
     with:
       free_workflows: ${{ inputs.free }}
     secrets: inherit
@@ -181,4 +181,4 @@ Todos esses secrets/variables chegam aos workflows reusable via `secrets: inheri
 
 ## Versionamento
 
-Os stubs do ops referenciam este repo por tag, ex.: `squadia-ai/workflows/.github/workflows/dev.yml@v0`. Na fase F1, `@v0` é uma tag **móvel** (reapontada para o commit mais recente da `develop` considerado estável) — não há garantia de compatibilidade estrita ainda. Tags imutáveis por versão semântica (`@v1`, `@v2`, ...) ficam para uma fase posterior, quando o contrato estabilizar.
+Os stubs do ops referenciam este repo por tag: `@dev` (HEAD da branch `develop` — squad trabalha aqui, pode quebrar; reapontada automaticamente a cada push via `move-channel-tag.yml`) ou `@prod` (HEAD da branch `main` — só existe quando o PO decide promover, mesclando `develop` → `main`; também reapontada automaticamente). Tenant 0 (`squadia-ai/ops`, dogfooding) consome `@dev` por design. Tenants de cliente consomem `@prod`. Tags imutáveis por versão semântica (`@v1`, `@v2`, ...) ficam para quando o contrato estabilizar ainda mais.
