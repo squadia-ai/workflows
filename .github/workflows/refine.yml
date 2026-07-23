@@ -147,6 +147,25 @@ jobs:
             }
           '
 
+      # Piloto de instrumentação (SQD-338): só leitura manual no log desta
+      # rodada de teste, sem parsing e sem gravar resultado em arquivo/
+      # artifact/output. Best-effort de propósito: nunca falha o job (nem se
+      # o binario "claude" nao aceitar modo nao-interativo, nem se faltar
+      # credencial) e nao replica a logica de resolucao de instancia/
+      # credencial por tenant que hoje so existe no core.
+      - name: Verifica uso da conta Claude (teste)
+        continue-on-error: true
+        run: |
+          token_var="$(compgen -v | grep '^CLAUDE_CODE_OAUTH_TOKEN_' | head -n1 || true)"
+
+          if [[ -z "$token_var" ]]; then
+            echo "Nenhuma env var CLAUDE_CODE_OAUTH_TOKEN_<sufixo> encontrada no ambiente do job; seguindo sem diagnostico de uso."
+          else
+            echo "Credencial encontrada em $token_var; expondo como CLAUDE_CODE_OAUTH_TOKEN so para este diagnostico."
+            export CLAUDE_CODE_OAUTH_TOKEN="${!token_var}"
+            claude -p "/usage" 2>&1 || echo "Comando de diagnostico de uso da conta Claude falhou ou nao esta disponivel neste modo."
+          fi
+
       - name: Executa o papel (refine) — fase work
         env:
           ISSUE_KEY: ${{ inputs.issue_key }}
