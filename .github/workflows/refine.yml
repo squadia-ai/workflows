@@ -4,7 +4,42 @@ name: Squadia - Refine (reusable)
 #   uses: squadia-ai/workflows/.github/workflows/refine.yml@dev
 #   secrets: inherit
 #
-# Roda o papel "refinador" dentro da imagem privada do core squadia.
+# Roda o papel "refinador" dentro da imagem privada do core squadia. Caso especial
+# entre os reusables deste repo: SÃO QUATRO JOBS, não dois — porque o refinador
+# encadeia o Quig (gerador de cenários de QA) direto ao terminar, pra fechar a corrida
+# entre o PO aprovar rápido e os cenários existirem (SQD-247, achado ao vivo,
+# 2026-07-21). Isso dobra o modelo work/cleanup normal:
+#
+#   work (refino) -> cleanup (refino) -> [quig-work -> quig-cleanup, condicionais]
+#
+# - `work`: roda o agente refinador (Claude, subtasks, memória arquitetural, descrição)
+#   SEM nenhuma credencial AWS — mantém live-tail no GitHub Actions.
+# - `cleanup` (needs: work, if: always()): libera o lock de conta Claude do refinador /
+#   atualiza o contador de falha pré-resultado via OIDC (mascarado, sem live-tail, mas
+#   dura segundos). ALÉM disso, decide SE o Quig deve rodar nesta rodada: tenta adquirir
+#   o lock da conta do Quig (mesma tabela DynamoDB, chave diferente) e grava a decisão
+#   num arquivo local (quig-dispatch-result.json) — nunca roda o agente do Quig aqui.
+#   Se a conta do Quig estiver ocupada (outro run em andamento) ou nenhuma instância do
+#   papel "qa" estiver configurada no tenant, a decisão é "não roda": o refinador já
+#   grava, nesse caso, o label temporário "aguardando-cenarios-qa" — a faixa residual
+#   "qa_scenarios" do orquestrador (board.ts) complementa numa rodada seguinte.
+# - `quig-work` / `quig-cleanup`: condicionais ao output `quig_should_run` de `cleanup`.
+#   Em vez de reimplementar a lógica do Quig aqui, estes dois jobs só invocam o
+#   entrypoint `qa-scenarios.js` já dividido (mesmo --phase work/cleanup do
+#   qa-scenarios.yml) — reaproveitando 100% da lógica já testada em vez de duplicá-la.
+#   `quig-work` roda sem credencial AWS (live-tail do Quig preservado); `quig-cleanup`
+#   libera o lock de conta do Quig / atualiza o contador dele via OIDC.
+#
+# Motivo da divisão work/cleanup (mesmo de dev.yml/qa-scenarios.yml/qa-execute.yml/
+# review.yml): aws-actions/configure-aws-credentials mascara como secret as 3
+# credenciais temporárias assim que roda, e o GitHub Actions para de streamar o log ao
+# vivo do JOB INTEIRO a partir dali — confirmado com teste controlado (2 jobs gêmeos,
+# só um com o step de credencial). Os jobs trocam informação via artifact
+# (*-work-result.json, escrito pelo core via `--phase work`, lido via `--phase
+# cleanup`) e, entre `cleanup` e `quig-work`, via job output (quig_should_run) lido de
+# um segundo arquivo local (quig-dispatch-result.json) que o próprio entrypoint
+# `refine.js --phase cleanup` grava.
+#
 # Nao declara bloco `secrets:` no workflow_call de proposito: o contrato
 # e o caller usar `secrets: inherit`, entao todos os secrets do caller
 # ficam disponiveis no contexto `secrets` deste workflow sem precisar
@@ -31,16 +66,14 @@ on:
         # Se o job estourar antes do Claude CLI, o runner mata o processo
         # sem deixar o wrapper do core capturar o erro e rodar o tratamento
         # ruidoso (job summary, redação de segredos — SQD-9): falha "suja",
-        # sem diagnóstico. Default aumentado pra 160min (2026-07-21): este
-        # workflow é o único que pode rodar DOIS Claude CLI em sequência no
-        # mesmo job — o refinador encadeia o Quig (gerador de cenários) direto
-        # ao terminar, cada um até claudeTimeoutMinutes (60min) no pior caso.
-        description: "Timeout do job, em minutos"
+        # sem diagnóstico. Usado tanto pelo job "work" do refino quanto pelo
+        # job "quig-work" (mesmo valor pros dois — nenhum input novo).
+        description: "Timeout dos jobs \"work\" e \"quig-work\", em minutos"
         type: number
-        default: 160
+        default: 75
 
 jobs:
-  agent:
+  work:
     runs-on: ubuntu-latest
     # Container jobs podem cair em sh (dash) como shell default; os scripts
     # destes workflows usam bash (contrato da imagem garante bash presente).
@@ -53,14 +86,9 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      # OIDC (ADR-015): necessário pro step "Configura credenciais AWS"
-      # trocar o token do job por uma role via
-      # aws-actions/configure-aws-credentials — sem isto o step falha com
-      # "Error: Unable to get ACTIONS_ID_TOKEN_REQUEST_URL env variable"
-      # mesmo com AWS_DATAPLANE_ROLE_ARN configurado. O stub caller no ops
-      # do tenant precisa declarar a mesma permissão (um caller nunca repassa
-      # mais do que concede a si próprio).
-      id-token: write
+      # SEM id-token: write aqui de proposito — este job nunca assume role
+      # AWS (a troca de credenciais OIDC acontece só no job "cleanup"), e é
+      # justamente essa ausência que preserva o live-tail do agente.
     container:
       image: ${{ inputs.image }}
       credentials:
@@ -119,6 +147,125 @@ jobs:
             }
           '
 
+      - name: Executa o papel (refine) — fase work
+        env:
+          ISSUE_KEY: ${{ inputs.issue_key }}
+          INSTANCE: ${{ inputs.instance }}
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          SQUADIA_CONFIG_PATH: squadia.config.yml
+          TENANT_CLAUDE_MD_PATH: CLAUDE.md
+          WORKSPACE_DIR: /tmp/squadia-workspace
+          WORK_RESULT_PATH: /tmp/refiner-work-result.json
+        run: |
+          args=("$ISSUE_KEY")
+          [[ -n "$INSTANCE" ]] && args+=(--instance "$INSTANCE")
+          node /app/dist/entrypoints/refine.js "${args[@]}" --phase work
+
+      # if: always() garante que o artifact suba mesmo se a fase work falhar
+      # (exit != 0) — o job "cleanup" precisa do resultado (mesmo que seja
+      # "falhou") pra liberar o lock de conta Claude e atualizar o contador.
+      # Nome distinto de "work-result-*" (usado por qa-scenarios.yml/dev.yml) de
+      # proposito: os jobs quig-work/quig-cleanup, abaixo, rodam o entrypoint
+      # qa-scenarios.js NESTE MESMO workflow run e publicam seu proprio artifact de
+      # work-result — nomes de artifact tem que ser unicos por run.
+      - name: Publica o resultado da fase work (artifact para o job cleanup)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: refiner-work-result-${{ inputs.issue_key }}
+          path: /tmp/refiner-work-result.json
+          retention-days: 1
+
+  cleanup:
+    needs: work
+    # if: always() garante que o cleanup roda mesmo se "work" falhar ou for
+    # cancelado — o lock de conta Claude e o contador do DynamoDB precisam
+    # ser liberados/atualizados independente do resultado da fase work.
+    if: always()
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    # Curto de proposito: so libera lock e atualiza contador (+ decide se o
+    # Quig roda), nao roda o Claude CLI. Nao usa o timeout_minutes do input
+    # (esse e dos jobs "work"/"quig-work").
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # OIDC (ADR-015): necessário pro step "Configura credenciais AWS"
+      # trocar o token do job por uma role via
+      # aws-actions/configure-aws-credentials — sem isto o step falha com
+      # "Error: Unable to get ACTIONS_ID_TOKEN_REQUEST_URL env variable"
+      # mesmo com AWS_DATAPLANE_ROLE_ARN configurado. O stub caller no ops
+      # do tenant precisa declarar a mesma permissão (um caller nunca repassa
+      # mais do que concede a si próprio).
+      id-token: write
+    # Output lido pelos jobs quig-work/quig-cleanup abaixo pra decidir se rodam —
+    # decisão gravada pelo próprio entrypoint refine.js --phase cleanup (SQD-247),
+    # extraída do arquivo local no step "Extrai decisão de despacho do Quig" abaixo.
+    outputs:
+      quig_should_run: ${{ steps.quig_dispatch.outputs.should_run }}
+    container:
+      image: ${{ inputs.image }}
+      credentials:
+        username: x-access-token
+        password: ${{ secrets.GHCR_PULL_TOKEN }}
+    steps:
+      - name: Checkout do repo caller (ops do tenant)
+        uses: actions/checkout@v4
+
+      # Repetido aqui porque "cleanup" é um job (e container) novo — não
+      # compartilha o GITHUB_ENV do job "work".
+      - name: Exporta variables do tenant
+        env:
+          VARS_CONTEXT: ${{ toJSON(vars) }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const vars = JSON.parse(process.env.VARS_CONTEXT || "{}");
+            const delimiter = "__SQUADIA_EOF__";
+            const envFile = process.env.GITHUB_ENV;
+            for (const [key, value] of Object.entries(vars)) {
+              const strValue = String(value);
+              if (strValue.split("\n").includes(delimiter)) {
+                console.error("Erro: a variable " + key + " contem uma linha igual ao delimitador do heredoc (" + delimiter + "); abortando para nao corromper o GITHUB_ENV.");
+                process.exit(1);
+              }
+              fs.appendFileSync(envFile, key + "<<" + delimiter + "\n" + strValue + "\n" + delimiter + "\n");
+            }
+          '
+
+      - name: Exporta secrets do tenant
+        env:
+          SECRETS_CONTEXT: ${{ toJSON(secrets) }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const secrets = JSON.parse(process.env.SECRETS_CONTEXT || "{}");
+            const excluded = new Set(["github_token", "GHCR_PULL_TOKEN"]);
+            const delimiter = "__SQUADIA_EOF__";
+            const envFile = process.env.GITHUB_ENV;
+            for (const [key, value] of Object.entries(secrets)) {
+              if (excluded.has(key)) continue;
+              const strValue = String(value);
+              if (strValue.split("\n").includes(delimiter)) {
+                console.error("Erro: o segredo " + key + " contem uma linha igual ao delimitador do heredoc (" + delimiter + "); abortando para nao corromper o GITHUB_ENV.");
+                process.exit(1);
+              }
+              fs.appendFileSync(envFile, key + "<<" + delimiter + "\n" + strValue + "\n" + delimiter + "\n");
+            }
+          '
+
+      - name: Baixa o resultado da fase work
+        uses: actions/download-artifact@v4
+        with:
+          name: refiner-work-result-${{ inputs.issue_key }}
+          path: /tmp
+          # download-artifact grava com o nome original do arquivo publicado; renomeia
+          # pro path esperado por WORK_RESULT_PATH abaixo caso o nome no artifact
+          # divirja — na prática path já bate (refiner-work-result.json), mantido só
+          # pra deixar explícito o contrato.
+
       # Opcional (ADR-015): só roda quando o tenant tem a role de dataplane
       # configurada (AWS_DATAPLANE_ROLE_ARN). Sem a variable, nenhum step AWS
       # executa e o comportamento continua igual ao de antes desta credencial
@@ -134,15 +281,197 @@ jobs:
           role-to-assume: ${{ vars.AWS_DATAPLANE_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      - name: Executa o papel (refine)
+      - name: Executa o papel (refine) — fase cleanup
         env:
           ISSUE_KEY: ${{ inputs.issue_key }}
           INSTANCE: ${{ inputs.instance }}
+          SQUADIA_CONFIG_PATH: squadia.config.yml
+          WORK_RESULT_PATH: /tmp/refiner-work-result.json
+          QUIG_DISPATCH_RESULT_PATH: /tmp/quig-dispatch-result.json
+        run: |
+          args=("$ISSUE_KEY")
+          [[ -n "$INSTANCE" ]] && args+=(--instance "$INSTANCE")
+          node /app/dist/entrypoints/refine.js "${args[@]}" --phase cleanup
+
+      # O entrypoint acima SEMPRE grava QUIG_DISPATCH_RESULT_PATH antes de
+      # retornar/lançar (mesmo quando a fase work do refino falhou — nesse caso
+      # shouldRun é simplesmente false) — por isso este step usa if: always() pra
+      # rodar mesmo se o step anterior tiver saído com exit != 0 (workResult de
+      # falha faz o entrypoint relançar o erro original, de propósito, pro job
+      # "cleanup" também reportar falha). Sem fallback defensivo aqui: se o
+      # arquivo não existir, é bug em refine.js, não motivo pra silenciar.
+      - name: Extrai decisão de despacho do Quig (SQD-247)
+        id: quig_dispatch
+        if: always()
+        run: |
+          SHOULD_RUN=$(node -e 'const r=JSON.parse(require("fs").readFileSync("/tmp/quig-dispatch-result.json","utf8")); console.log(r.shouldRun)')
+          echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+
+  quig-work:
+    needs: cleanup
+    if: needs.cleanup.outputs.quig_should_run == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    # Mesmo timeout do job "work" do refino — nenhum input novo pro Quig.
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+      # SEM id-token: write aqui de proposito, mesmo motivo do job "work" acima:
+      # este job roda o agente do Quig e não deve mascarar credencial nenhuma.
+    container:
+      image: ${{ inputs.image }}
+      credentials:
+        username: x-access-token
+        password: ${{ secrets.GHCR_PULL_TOKEN }}
+    steps:
+      - name: Checkout do repo caller (ops do tenant)
+        uses: actions/checkout@v4
+
+      - name: Exporta variables do tenant
+        env:
+          VARS_CONTEXT: ${{ toJSON(vars) }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const vars = JSON.parse(process.env.VARS_CONTEXT || "{}");
+            const delimiter = "__SQUADIA_EOF__";
+            const envFile = process.env.GITHUB_ENV;
+            for (const [key, value] of Object.entries(vars)) {
+              const strValue = String(value);
+              if (strValue.split("\n").includes(delimiter)) {
+                console.error("Erro: a variable " + key + " contem uma linha igual ao delimitador do heredoc (" + delimiter + "); abortando para nao corromper o GITHUB_ENV.");
+                process.exit(1);
+              }
+              fs.appendFileSync(envFile, key + "<<" + delimiter + "\n" + strValue + "\n" + delimiter + "\n");
+            }
+          '
+
+      - name: Exporta secrets do tenant
+        env:
+          SECRETS_CONTEXT: ${{ toJSON(secrets) }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const secrets = JSON.parse(process.env.SECRETS_CONTEXT || "{}");
+            const excluded = new Set(["github_token", "GHCR_PULL_TOKEN"]);
+            const delimiter = "__SQUADIA_EOF__";
+            const envFile = process.env.GITHUB_ENV;
+            for (const [key, value] of Object.entries(secrets)) {
+              if (excluded.has(key)) continue;
+              const strValue = String(value);
+              if (strValue.split("\n").includes(delimiter)) {
+                console.error("Erro: o segredo " + key + " contem uma linha igual ao delimitador do heredoc (" + delimiter + "); abortando para nao corromper o GITHUB_ENV.");
+                process.exit(1);
+              }
+              fs.appendFileSync(envFile, key + "<<" + delimiter + "\n" + strValue + "\n" + delimiter + "\n");
+            }
+          '
+
+      # Identidade/credenciais do Quig são resolvidas pelo próprio qa-scenarios.js a
+      # partir da instância "qa" do tenant (squadia.config.yml) + env vars já
+      # exportadas acima — nada tenant-secret precisa fluir do job "cleanup" do
+      # refino pra cá (ver decideQaScenarioDispatch em entrypoints/refine.ts, no core).
+      - name: Executa o papel (qa-scenarios / Quig) — fase work
+        env:
+          ISSUE_KEY: ${{ inputs.issue_key }}
           JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
           SQUADIA_CONFIG_PATH: squadia.config.yml
           TENANT_CLAUDE_MD_PATH: CLAUDE.md
           WORKSPACE_DIR: /tmp/squadia-workspace
+          WORK_RESULT_PATH: /tmp/qa-work-result.json
         run: |
-          args=("$ISSUE_KEY")
-          [[ -n "$INSTANCE" ]] && args+=(--instance "$INSTANCE")
-          node /app/dist/entrypoints/refine.js "${args[@]}"
+          node /app/dist/entrypoints/qa-scenarios.js "$ISSUE_KEY" --phase work
+
+      # Nome distinto de "work-result-*" (usado pelo qa-scenarios.yml standalone) —
+      # sem risco real de colisão entre arquivos de workflow diferentes, mas mantido
+      # assim por clareza na Actions UI deste workflow especificamente.
+      - name: Publica o resultado da fase work do Quig (artifact para o job quig-cleanup)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-work-result-${{ inputs.issue_key }}
+          path: /tmp/qa-work-result.json
+          retention-days: 1
+
+  quig-cleanup:
+    needs: [cleanup, quig-work]
+    if: always() && needs.cleanup.outputs.quig_should_run == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    container:
+      image: ${{ inputs.image }}
+      credentials:
+        username: x-access-token
+        password: ${{ secrets.GHCR_PULL_TOKEN }}
+    steps:
+      - name: Checkout do repo caller (ops do tenant)
+        uses: actions/checkout@v4
+
+      - name: Exporta variables do tenant
+        env:
+          VARS_CONTEXT: ${{ toJSON(vars) }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const vars = JSON.parse(process.env.VARS_CONTEXT || "{}");
+            const delimiter = "__SQUADIA_EOF__";
+            const envFile = process.env.GITHUB_ENV;
+            for (const [key, value] of Object.entries(vars)) {
+              const strValue = String(value);
+              if (strValue.split("\n").includes(delimiter)) {
+                console.error("Erro: a variable " + key + " contem uma linha igual ao delimitador do heredoc (" + delimiter + "); abortando para nao corromper o GITHUB_ENV.");
+                process.exit(1);
+              }
+              fs.appendFileSync(envFile, key + "<<" + delimiter + "\n" + strValue + "\n" + delimiter + "\n");
+            }
+          '
+
+      - name: Exporta secrets do tenant
+        env:
+          SECRETS_CONTEXT: ${{ toJSON(secrets) }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const secrets = JSON.parse(process.env.SECRETS_CONTEXT || "{}");
+            const excluded = new Set(["github_token", "GHCR_PULL_TOKEN"]);
+            const delimiter = "__SQUADIA_EOF__";
+            const envFile = process.env.GITHUB_ENV;
+            for (const [key, value] of Object.entries(secrets)) {
+              if (excluded.has(key)) continue;
+              const strValue = String(value);
+              if (strValue.split("\n").includes(delimiter)) {
+                console.error("Erro: o segredo " + key + " contem uma linha igual ao delimitador do heredoc (" + delimiter + "); abortando para nao corromper o GITHUB_ENV.");
+                process.exit(1);
+              }
+              fs.appendFileSync(envFile, key + "<<" + delimiter + "\n" + strValue + "\n" + delimiter + "\n");
+            }
+          '
+
+      - name: Baixa o resultado da fase work do Quig
+        uses: actions/download-artifact@v4
+        with:
+          name: qa-work-result-${{ inputs.issue_key }}
+          path: /tmp
+
+      - name: Configura credenciais AWS (OIDC)
+        if: vars.AWS_DATAPLANE_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DATAPLANE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Executa o papel (qa-scenarios / Quig) — fase cleanup
+        env:
+          ISSUE_KEY: ${{ inputs.issue_key }}
+          SQUADIA_CONFIG_PATH: squadia.config.yml
+          WORK_RESULT_PATH: /tmp/qa-work-result.json
+        run: |
+          node /app/dist/entrypoints/qa-scenarios.js "$ISSUE_KEY" --phase cleanup
