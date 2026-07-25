@@ -17,7 +17,7 @@ on:
   workflow_call:
     inputs:
       free_workflows:
-        description: "CSV dos papeis livres para o orquestrador considerar (refine,dev,review,qa_scenarios,qa)"
+        description: "CSV dos papeis livres para o orquestrador considerar (refine_business,refine_tech,dev,review,qa_scenarios,qa — ADR-017)"
         type: string
         default: ""
       image:
@@ -65,7 +65,8 @@ jobs:
         env:
           FREE_WORKFLOWS: ${{ inputs.free_workflows }}
         run: |
-          [[ "$FREE_WORKFLOWS" =~ ^$|^(refine|dev|review|qa_scenarios|qa)(,(refine|dev|review|qa_scenarios|qa))*$ ]] || { echo "free_workflows invalido"; exit 1; }
+          ROLE='(refine_business|refine_tech|dev|review|qa_scenarios|qa)'
+          [[ "$FREE_WORKFLOWS" =~ ^$|^$ROLE(,$ROLE)*$ ]] || { echo "free_workflows invalido"; exit 1; }
 
       - name: Checkout do repo caller (ops do tenant)
         uses: actions/checkout@v4

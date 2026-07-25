@@ -28,9 +28,9 @@ on:
         type: string
         default: "orchestrate.yml"
       agent_workflows:
-        description: "CSV de pares papel:arquivo-do-stub no repo ops (papeis validos: refine, dev, review, qa_scenarios, qa)"
+        description: "CSV de pares papel:arquivo-do-stub no repo ops (papeis validos: refine_business, refine_tech, dev, review, qa_scenarios, qa — ADR-017)"
         type: string
-        default: "refine:refine-agent.yml,dev:dev-agent.yml,review:review-agent.yml"
+        default: "refine_business:refine-business-agent.yml,refine_tech:refine-tech-agent.yml,dev:dev-agent.yml,review:review-agent.yml,qa_scenarios:qa-scenarios-agent.yml,qa:qa-execute-agent.yml"
 
 jobs:
   dispatch:
@@ -51,8 +51,9 @@ jobs:
           script: |
             const workerWorkflow = process.env.WORKER_WORKFLOW;
             // Pares papel:arquivo — o busy-check olha ARQUIVOS de stub, mas o
-            // worker (e o core) falam em PAPEIS (refine|dev|review|qa_scenarios|qa).
-            const validRoles = new Set(["refine", "dev", "review", "qa_scenarios", "qa"]);
+            // worker (e o core) falam em PAPEIS. ADR-017: refino virou duas faixas
+            // (negocio/tecnico), cada uma com seu proprio stub/instancia.
+            const validRoles = new Set(["refine_business", "refine_tech", "dev", "review", "qa_scenarios", "qa"]);
             const agentWorkflows = (process.env.AGENT_WORKFLOWS || "")
               .split(",")
               .map((s) => s.trim())
@@ -61,7 +62,7 @@ jobs:
                 const [role, file] = pair.split(":").map((s) => s.trim());
                 if (!validRoles.has(role) || !file) {
                   throw new Error(
-                    `agent_workflows invalido: "${pair}" (esperado papel:arquivo, papeis: refine|dev|review|qa_scenarios|qa)`
+                    `agent_workflows invalido: "${pair}" (esperado papel:arquivo, papeis: refine_business|refine_tech|dev|review|qa_scenarios|qa)`
                   );
                 }
                 return { role, file };
