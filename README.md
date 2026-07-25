@@ -22,7 +22,7 @@ O trabalho pesado (rodar o papel, decidir concurrency, exportar credenciais para
 | `review.yml` | Revisor (2 jobs: `work` + `cleanup`) | `issue_key` (required), `image`, `instance`, `timeout_minutes` (do job `work`, default 75) | `squadia-review-<issue_key>` |
 | `qa-scenarios.yml` | QA (gerador de cenários, 2 jobs: `work` + `cleanup`) | `issue_key` (required), `image`, `instance`, `timeout_minutes` (do job `work`, default 75) | `squadia-qa-scenarios-<issue_key>` |
 | `qa-execute.yml` | QA (executor — build/testes/merge, 2 jobs: `work` + `cleanup`) | `issue_key` (required), `image`, `instance`, `timeout_minutes` (do job `work`, default 75) | `squadia-qa-execute-<issue_key>` |
-| `orchestrate-worker.yml` | Orquestrador | `free_workflows` (CSV de `refine,dev,review,qa_scenarios,qa`, default `""`), `image`, `instance`, `timeout_minutes` (default 20) | `squadia-orchestrator` (fixo, sem issue) |
+| `orchestrate-worker.yml` | Orquestrador | `free_workflows` (CSV de `refine_business,refine_tech,dev,review,qa_scenarios,qa`, default `""`), `image`, `instance`, `timeout_minutes` (default 20) | `squadia-orchestrator` (fixo, sem issue) |
 | `orchestrate-dispatcher.yml` | Pré-check do orquestrador | `worker_workflow` (default `orchestrate.yml`), `agent_workflows` (CSV de pares `papel:arquivo`, default `refine_business:refine-business-agent.yml,refine_tech:refine-tech-agent.yml,dev:dev-agent.yml,review:review-agent.yml,qa_scenarios:qa-scenarios-agent.yml,qa:qa-execute-agent.yml` — ADR-017) | `squadia-dispatcher` (fixo) |
 
 Os seis primeiros rodam dentro de um `container:` com a imagem do core (contrato de entrypoints abaixo). O `orchestrate-dispatcher.yml` é diferente de propósito: roda **sem container, sem Docker e sem LLM**, direto no runner `ubuntu-latest` — é só um pré-check barato (via `actions/github-script`) para decidir se vale a pena acordar o worker do orquestrador, olhando quais workflows já estão `in_progress`/`queued` no repo. O worker sempre revalida ocupação, rate-limit e pausa por conta própria antes de agir (defesa em profundidade) — o dispatcher é otimização de custo, não fonte de verdade.
@@ -44,7 +44,7 @@ O `refine.yml` voltou ao modelo 2-jobs padrão na ADR-017 — o Quig é despacha
   - `node /app/dist/entrypoints/review.js <ISSUE-KEY> [--instance NOME]`
   - `node /app/dist/entrypoints/qa-scenarios.js <ISSUE-KEY> [--instance NOME]`
   - `node /app/dist/entrypoints/qa-execute.js <ISSUE-KEY> [--instance NOME]`
-  - `node /app/dist/entrypoints/orchestrate.js [--free refine,dev,review,qa_scenarios,qa] [--instance NOME]`
+  - `node /app/dist/entrypoints/orchestrate.js [--free refine_business,refine_tech,dev,review,qa_scenarios,qa] [--instance NOME]`
 
 ### Contrato de ambiente dos entrypoints
 
@@ -139,7 +139,7 @@ on:
   workflow_dispatch:
     inputs:
       free:
-        description: "CSV dos papeis livres (refine,dev,review,qa_scenarios,qa); vazio = revalidar todos"
+        description: "CSV dos papeis livres (refine_business,refine_tech,dev,review,qa_scenarios,qa); vazio = revalidar todos"
         type: string
         default: ""
 
