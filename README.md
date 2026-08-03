@@ -22,12 +22,10 @@ O trabalho pesado (rodar o papel, decidir concurrency, exportar credenciais para
 | `review.yml` | Revisor (2 jobs: `work` + `cleanup`) | `issue_key` (required), `image`, `instance`, `timeout_minutes` (do job `work`, default 75) | `squadia-review-<issue_key>` |
 | `qa-scenarios.yml` | QA (gerador de cenários, 2 jobs: `work` + `cleanup`) | `issue_key` (required), `image`, `instance`, `timeout_minutes` (do job `work`, default 75) | `squadia-qa-scenarios-<issue_key>` |
 | `qa-execute.yml` | QA (executor — build/testes/merge, 2 jobs: `work` + `cleanup`) | `issue_key` (required), `image`, `instance`, `timeout_minutes` (do job `work`, default 75) | `squadia-qa-execute-<issue_key>` |
-| `orchestrate-worker.yml` | Orquestrador | `free_workflows` (CSV de `refine_business,refine_tech,dev,review,qa_scenarios,qa`, default `""`), `image`, `instance`, `timeout_minutes` (default 20) | `squadia-orchestrator` (fixo, sem issue) |
-| `orchestrate-dispatcher.yml` | Pré-check do orquestrador | `worker_workflow` (default `orchestrate.yml`), `agent_workflows` (CSV de pares `papel:arquivo`, default `refine_business:refine-business-agent.yml,refine_tech:refine-tech-agent.yml,dev:dev-agent.yml,review:review-agent.yml,qa_scenarios:qa-scenarios-agent.yml,qa:qa-execute-agent.yml` — ADR-017) | `squadia-dispatcher` (fixo) |
 
-Os seis primeiros rodam dentro de um `container:` com a imagem do core (contrato de entrypoints abaixo). O `orchestrate-dispatcher.yml` é diferente de propósito: roda **sem container, sem Docker e sem LLM**, direto no runner `ubuntu-latest` — é só um pré-check barato (via `actions/github-script`) para decidir se vale a pena acordar o worker do orquestrador, olhando quais workflows já estão `in_progress`/`queued` no repo. O worker sempre revalida ocupação, rate-limit e pausa por conta própria antes de agir (defesa em profundidade) — o dispatcher é otimização de custo, não fonte de verdade.
+Os cinco rodam dentro de um `container:` com a imagem do core (contrato de entrypoints abaixo) e declaram `permissions: id-token: write` no job (além de `contents: read`), necessário pro step opcional de credenciais AWS via OIDC — ver "Credenciais AWS do data plane (OIDC)" abaixo. Todos dividem isso em dois jobs (ver abaixo): só o job `cleanup` declara `id-token: write`.
 
-Os seis primeiros também declaram `permissions: id-token: write` no job (além de `contents: read`), necessário pro step opcional de credenciais AWS via OIDC — ver "Credenciais AWS do data plane (OIDC)" abaixo. O `orchestrate-dispatcher.yml` não precisa disso (não toca dataplane). Exceção: `refine.yml`, `dev.yml`, `qa-scenarios.yml`, `qa-execute.yml` e `review.yml` dividem isso em dois jobs (ver abaixo) — só o job `cleanup` declara `id-token: write`.
+> `orchestrate-worker.yml`/`orchestrate-dispatcher.yml` (orquestrador baseado em Jira, despacho por polling) foram removidos — o despacho real agora é o endpoint `/dispatch` da squadia platform (squadia-ai/platform), disparado a partir de escritas relevantes no board (ADR-007 §7.1/§7.3), não mais por um workflow de orquestrador rodando neste repo.
 
 `refine.yml`, `dev.yml`, `qa-scenarios.yml`, `qa-execute.yml` e `review.yml` são reusables com dois jobs em vez de um: `work` roda o agente (no caso do refine: Claude, conforme `--stage` — `business` só reescreve descrição/critérios de aceite; `technical` monta subtasks, define componentes, estima modelo e atualiza memória arquitetural, ADR-017; no caso do dev: clone, Claude, commit, PR; no caso do qa-scenarios: Claude, subtask de auditoria "QA", label de fila pro gate do PO; no caso do qa-execute: clone, Claude/build/testes, merge do PR; no caso do review: Claude, aprovação/comentário de PR, label de fila pra próxima fase) sem nenhuma credencial AWS, e `cleanup` (`needs: work`, `if: always()`) só libera o lock de conta Claude / atualiza o contador no DynamoDB via OIDC. O motivo é que `aws-actions/configure-aws-credentials` mascara como secret as credenciais temporárias assim que roda, e isso interrompe o live-tail do log do job inteiro no GitHub Actions — separando o step em outro job, o acompanhamento em tempo real do agente (a parte longa e interessante) fica preservado. Os dois jobs trocam informação via artifact (`work-result.json`).
 
@@ -44,7 +42,6 @@ O `refine.yml` voltou ao modelo 2-jobs padrão na ADR-017 — o Quig é despacha
   - `node /app/dist/entrypoints/review.js <ISSUE-KEY> [--instance NOME]`
   - `node /app/dist/entrypoints/qa-scenarios.js <ISSUE-KEY> [--instance NOME]`
   - `node /app/dist/entrypoints/qa-execute.js <ISSUE-KEY> [--instance NOME]`
-  - `node /app/dist/entrypoints/orchestrate.js [--free refine_business,refine_tech,dev,review,qa_scenarios,qa] [--instance NOME]`
 
 ### Contrato de ambiente dos entrypoints
 
@@ -69,12 +66,14 @@ A ordem importa: variables primeiro, secrets depois. Se um tenant tiver, por eng
 
 ### Credenciais AWS do data plane (OIDC)
 
-A infra AWS do produto (tabelas DynamoDB do `StateStore`, roles) mora na org do fornecedor e é provisionada fora deste repo (ADR-015). O que os seis workflows de papel (`refine`, `dev`, `review`, `qa-scenarios`, `qa-execute`, `orchestrate-worker`) fazem é *consumir* essa infra: cada um ganha, logo antes do step "Executa o papel/orquestrador", um step opcional de [`aws-actions/configure-aws-credentials@v4`](https://github.com/aws-actions/configure-aws-credentials) que troca a identidade OIDC do job por credenciais temporárias via `role-to-assume: ${{ vars.AWS_DATAPLANE_ROLE_ARN }}`.
+A infra AWS do produto (tabelas DynamoDB do `StateStore`, roles) mora na org do fornecedor e é provisionada fora deste repo (ADR-015). O que os cinco workflows de papel (`refine`, `dev`, `review`, `qa-scenarios`, `qa-execute`) fazem é *consumir* essa infra: cada um ganha, logo antes do step "Executa o papel", um step opcional de [`aws-actions/configure-aws-credentials@v4`](https://github.com/aws-actions/configure-aws-credentials) que troca a identidade OIDC do job por credenciais temporárias via `role-to-assume: ${{ vars.AWS_DATAPLANE_ROLE_ARN }}`.
+
+> Nota (pós-migração ADR-010/ADR-012): `core` não fala mais com o DynamoDB diretamente — o `StateStore`/`BrakeStore` foram removidos junto com o orquestrador baseado em Jira; o board e o freio de despacho agora vivem na squadia platform (Postgres, via HTTP). Este step de OIDC ficou como infraestrutura vestigial nos cinco workflows de papel — não foi removido nesta limpeza porque exigiria mudar os cinco reusables (mudança coordenada com `core`), fora do escopo desta remoção.
 
 - **Opcional por tenant**: o step só roda quando o caller define a Variable `AWS_DATAPLANE_ROLE_ARN` (`if: vars.AWS_DATAPLANE_ROLE_ARN != ''`). Tenant sem essa Variable não sofre nenhuma mudança de comportamento.
 - **Sem access key estática**: a role IAM (`squadia-dataplane-<tenant>-<env>`) é assumida via OIDC do GitHub Actions, com trust restrito ao repo `ops` daquele tenant. Nenhum secret de AWS de longa duração circula por este repo.
 - **Propagação pro entrypoint**: `configure-aws-credentials` exporta `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` (temporárias) via `GITHUB_ENV` — o mesmo mecanismo de `GITHUB_ENV` que os steps "Exporta variables/secrets do tenant" já usam —, então chegam ao ambiente do processo do entrypoint automaticamente, sem step extra de re-export.
-- **`permissions: id-token: write` é obrigatório** no job destes seis workflows (e no job do stub caller que os invoca — ver seção de permissions do stub abaixo), porque o token OIDC do job vem dessa permissão. **Erro típico quando o caller esquece**: o step `configure-aws-credentials` falha com `Error: Unable to get ACTIONS_ID_TOKEN_REQUEST_URL env variable` — a permissão não foi concedida, então o runner nunca populou a env var que a action usa pra pedir o token OIDC.
+- **`permissions: id-token: write` é obrigatório** no job destes cinco workflows (e no job do stub caller que os invoca — ver seção de permissions do stub abaixo), porque o token OIDC do job vem dessa permissão. **Erro típico quando o caller esquece**: o step `configure-aws-credentials` falha com `Error: Unable to get ACTIONS_ID_TOKEN_REQUEST_URL env variable` — a permissão não foi concedida, então o runner nunca populou a env var que a action usa pra pedir o token OIDC.
 - **A credencial não chega ao Claude CLI**: o entrypoint roda no core, cujo wrapper controla explicitamente que env vars repassa pro subprocesso do `claude` CLI (allowlist do `untrusted.ts`, fora deste repo). `AWS_*` nunca fez parte dessa allowlist — só o código TypeScript do wrapper acessa o DynamoDB, nunca o LLM — e esta mudança não adiciona `AWS_*` lá.
 
 ### Regra de segurança
@@ -111,52 +110,6 @@ jobs:
       instance: "" # ou o sufixo, se o tenant tiver múltiplas instâncias
     secrets: inherit
 ```
-
-O orquestrador usa **dois stubs**: o cron roda só o dispatcher (pré-check barato), e o worker fica num arquivo próprio que o dispatcher acorda via `workflow_dispatch` quando há papel livre (economizando execuções do worker/imagem):
-
-```yaml
-# .github/workflows/orchestrate-cron.yml (no repo ops do tenant)
-name: Orchestrate cron
-
-on:
-  schedule:
-    - cron: "*/5 * * * *"
-
-jobs:
-  dispatch-check:
-    uses: squadia-ai/workflows/.github/workflows/orchestrate-dispatcher.yml@dev
-    with:
-      worker_workflow: orchestrate.yml
-      agent_workflows: refine_business:refine-business-agent.yml,refine_tech:refine-tech-agent.yml,dev:dev-agent.yml,review:review-agent.yml,qa_scenarios:qa-scenarios-agent.yml,qa:qa-execute-agent.yml
-    secrets: inherit
-```
-
-```yaml
-# .github/workflows/orchestrate.yml (no repo ops do tenant)
-name: Orchestrate
-
-on:
-  workflow_dispatch:
-    inputs:
-      free:
-        description: "CSV dos papeis livres (refine_business,refine_tech,dev,review,qa_scenarios,qa); vazio = revalidar todos"
-        type: string
-        default: ""
-
-jobs:
-  orchestrate:
-    # Mesmo motivo do stub do dev acima: OIDC do reusable exige id-token:
-    # write no job que o chama.
-    permissions:
-      contents: read
-      id-token: write
-    uses: squadia-ai/workflows/.github/workflows/orchestrate-worker.yml@dev
-    with:
-      free_workflows: ${{ inputs.free }}
-    secrets: inherit
-```
-
-O nome do stub do worker (`orchestrate.yml` acima) é o valor que o tenant passa em `worker_workflow` no dispatcher — é ele quem o dispatcher vai "acordar" quando achar que vale a pena. O dispatch manual do worker (aba Actions → Run workflow) também funciona e bypassa o dispatcher — o worker revalida tudo sozinho.
 
 ## Secrets e vars esperados no repo ops
 
