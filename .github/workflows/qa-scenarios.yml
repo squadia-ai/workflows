@@ -40,6 +40,10 @@ on:
         description: "Nome da instancia do papel na squadia.config.yml (default: a primeira)"
         type: string
         default: ""
+      execution_id:
+        description: "uuid da execução aberta pela plataforma (ADR-007 §5) — o papel a fecha ao terminar"
+        type: string
+        default: ""
       timeout_minutes:
         # Invariante (SQD-52): este timeout tem que ser MAIOR que o
         # claudeTimeoutMinutes do core (default 60 min, fora deste repo).
@@ -132,6 +136,7 @@ jobs:
         env:
           ISSUE_KEY: ${{ inputs.issue_key }}
           INSTANCE: ${{ inputs.instance }}
+          EXECUTION_ID: ${{ inputs.execution_id }}
           JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
           SQUADIA_CONFIG_PATH: squadia.config.yml
           TENANT_CLAUDE_MD_PATH: CLAUDE.md
@@ -140,6 +145,7 @@ jobs:
         run: |
           args=("$ISSUE_KEY")
           [[ -n "$INSTANCE" ]] && args+=(--instance "$INSTANCE")
+          [[ -n "$EXECUTION_ID" ]] && args+=(--execution-id "$EXECUTION_ID")
           node /app/dist/entrypoints/qa-scenarios.js "${args[@]}" --phase work
 
       # if: always() garante que o artifact suba mesmo se a fase work falhar
@@ -252,9 +258,11 @@ jobs:
         env:
           ISSUE_KEY: ${{ inputs.issue_key }}
           INSTANCE: ${{ inputs.instance }}
+          EXECUTION_ID: ${{ inputs.execution_id }}
           SQUADIA_CONFIG_PATH: squadia.config.yml
           WORK_RESULT_PATH: /tmp/work-result.json
         run: |
           args=("$ISSUE_KEY")
           [[ -n "$INSTANCE" ]] && args+=(--instance "$INSTANCE")
+          [[ -n "$EXECUTION_ID" ]] && args+=(--execution-id "$EXECUTION_ID")
           node /app/dist/entrypoints/qa-scenarios.js "${args[@]}" --phase cleanup
