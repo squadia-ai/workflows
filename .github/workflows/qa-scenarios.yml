@@ -1,0 +1,205 @@
+name: Squadia - QA Scenarios (reusable)
+
+# Reusable workflow chamado pelo repo "ops" de um tenant via:
+#   uses: squadia-ai/workflows/.github/workflows/qa-scenarios.yml@dev
+#   secrets: inherit
+#
+# Roda o papel "QA gerador de cenarios" (Quig, SQD-19) dentro da imagem privada do core squadia.
+#
+# UM job (não dois): até 14/08/2026 este workflow rodava "work" (o agente:
+# Claude, cria/comenta a subtask de auditoria "QA", transiciona a issue) e
+# "cleanup" (fecha a execução no despacho, libera pausa por limite de uso) em
+# jobs SEPARADOS, especificamente porque `aws-actions/configure-aws-credentials`
+# mascarava 3 credenciais temporárias e o GitHub Actions parava de streamar o
+# log ao vivo do JOB INTEIRO a partir dali — isolar o step de credencial no
+# job "cleanup" preservava o live-tail do "work". Essa credencial (ADR-015/
+# MVP, hq/docs/mvp/adr — fase ENCERRADA) alimentava telemetria/faturamento
+# via DynamoDB (ADR-018/MVP), que a migração pra plataforma (ADR-010/012,
+# ADR-011 na fase 1.0 atual) substituiu por completo: nenhum papel (dev/
+# reviewer/qa/refine) toca AWS SDK ou DynamoDB hoje — confirmado por busca
+# exaustiva no código-fonte do `core` (zero ocorrência de `aws-sdk`/
+# `AWS_ACCESS_KEY`/`AWS_DATAPLANE` em `src/`). O step de credencial era
+# dívida técnica de uma arquitetura já substituída, não uma necessidade viva
+# — por isso foi removido, e com ele o motivo original do split.
+#
+# Unificar economiza, por rodada: uma inicialização de container a menos, o
+# roundtrip de artifact (upload/download de work-result.json) que só existia
+# porque "work"/"cleanup" eram jobs/runners diferentes sem filesystem
+# compartilhado, e os steps de checkout/export de variables/secrets
+# duplicados. Achado ao vivo em 14-15/08/2026 ao investigar uma queda de
+# performance: GitHub Actions cobra por JOB, minuto cheio arredondado pra
+# cima — o "cleanup" antigo levava 30-45s reais e ainda assim batia 1 minuto
+# inteiro faturado, sempre. Amostra de 9 rodadas reais: unificar economiza 1
+# minuto cheio em ~2/3 delas (nunca piora — matematicamente,
+# ceil(a+b) <= ceil(a)+ceil(b) sempre).
+#
+# A proteção que o split original dava de graça — "cleanup" roda mesmo se
+# "work" estourar o timeout, porque é um job novo, agendado à parte — é
+# recriada aqui por outro mecanismo: o step "fase work" tem SEU PRÓPRIO
+# timeout-minutes (o valor do input), menor que o do job inteiro (folga fixa
+# abaixo). Se só o step estourar, o step é cancelado e marcado como falho,
+# mas o JOB continua — o step de "fase cleanup" (if: always()) ainda roda,
+# com a folga que sobrou do orçamento do job. Preserva a garantia original
+# sem precisar de um job/runner separado pra isso.
+#
+# Contraexemplo que essa proteção NÃO cobre, e nunca cobriu (nem no modelo de
+# 2 jobs): a squad ficou travada por ~2h em 14/08/2026 porque a org GitHub
+# bloqueou TODOS os jobs (billing/spending limit) antes de qualquer runner
+# ser alocado — nesse cenário nem "work" nem "cleanup" chegam a rodar,
+# independente de serem 1 job ou 2. A rede de segurança real pra esse caso é
+# a reconciliação de `execution` órfã do lado da plataforma (gap conhecido,
+# ainda não implementado), não a topologia de jobs do GitHub Actions.
+#
+# Nao declara bloco `secrets:` no workflow_call de proposito: o contrato
+# e o caller usar `secrets: inherit`, entao todos os secrets do caller
+# ficam disponiveis no contexto `secrets` deste workflow sem precisar
+# listar cada nome aqui (os sufixos de instancia variam por tenant).
+
+on:
+  workflow_call:
+    inputs:
+      issue_key:
+        description: "Chave da issue Jira para gerar cenarios de QA (ex.: SQD-14)"
+        type: string
+        required: true
+      image:
+        description: "Imagem Docker do core squadia usada para rodar o papel"
+        type: string
+        default: "ghcr.io/squadia-ai/core:dev"
+      instance:
+        description: "Nome da instancia do papel na squadia.config.yml (default: a primeira)"
+        type: string
+        default: ""
+      execution_id:
+        description: "uuid da execução aberta pela plataforma (ADR-007 §5) — o papel a fecha ao terminar"
+        type: string
+        default: ""
+      timeout_minutes:
+        # Invariante (SQD-52): este timeout tem que ser MAIOR que o
+        # claudeTimeoutMinutes do core (default 60 min, fora deste repo).
+        # Se o job estourar antes do Claude CLI, o runner mata o processo
+        # sem deixar o wrapper do core capturar o erro e rodar o tratamento
+        # ruidoso (job summary, redação de segredos — SQD-9): falha "suja",
+        # sem diagnóstico. 75 min dá folga sobre os 60 do core para esse
+        # tratamento rodar depois do estouro. É o timeout do STEP "fase
+        # work" — o job inteiro tem folga fixa em cima disso (ver
+        # JOB_TIMEOUT_MINUTES abaixo), pro step "fase cleanup" ainda rodar
+        # mesmo se "fase work" estourar o dele.
+        description: "Timeout da fase \"work\", em minutos"
+        type: number
+        default: 75
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # Container jobs podem cair em sh (dash) como shell default; os scripts
+    # destes workflows usam bash (contrato da imagem garante bash presente).
+    defaults:
+      run:
+        shell: bash
+    # Fixo, não derivado do input: expressão do GitHub Actions não tem
+    # operador aritmético (só comparação/lógica — confirmado na doc oficial
+    # antes de tentar `inputs.timeout_minutes + 10`, que falharia). 90min é
+    # folga fixa sobre o default de 75 do input acima (+10min do antigo job
+    # "cleanup" +5min de margem) — se o default do input mudar pra algo
+    # perto de 90, reajuste este valor junto (os dois não se calculam
+    # sozinhos). A folga é o que permite o step "fase cleanup" ainda rodar
+    # mesmo se "fase work" estourar o timeout do SEU step, não o do job.
+    timeout-minutes: 90
+    concurrency:
+      group: squadia-qa-scenarios-${{ inputs.issue_key }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    container:
+      image: ${{ inputs.image }}
+      credentials:
+        username: x-access-token
+        password: ${{ secrets.GHCR_PULL_TOKEN }}
+    steps:
+      - name: Valida issue key
+        env:
+          ISSUE_KEY: ${{ inputs.issue_key }}
+        run: |
+          [[ "$ISSUE_KEY" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || { echo "issue key invalida"; exit 1; }
+
+      - name: Checkout do repo caller (ops do tenant)
+        uses: actions/checkout@v4
+
+      # Ordem importa: variables primeiro, secrets depois. Se houver colisao
+      # de nome entre uma Variable e um Secret do tenant, o secret vence
+      # porque escreve por ultimo no GITHUB_ENV.
+      - name: Exporta variables do tenant
+        env:
+          VARS_CONTEXT: ${{ toJSON(vars) }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const vars = JSON.parse(process.env.VARS_CONTEXT || "{}");
+            const delimiter = "__SQUADIA_EOF__";
+            const envFile = process.env.GITHUB_ENV;
+            for (const [key, value] of Object.entries(vars)) {
+              const strValue = String(value);
+              if (strValue.split("\n").includes(delimiter)) {
+                console.error("Erro: a variable " + key + " contem uma linha igual ao delimitador do heredoc (" + delimiter + "); abortando para nao corromper o GITHUB_ENV.");
+                process.exit(1);
+              }
+              fs.appendFileSync(envFile, key + "<<" + delimiter + "\n" + strValue + "\n" + delimiter + "\n");
+            }
+          '
+
+      - name: Exporta secrets do tenant
+        env:
+          SECRETS_CONTEXT: ${{ toJSON(secrets) }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const secrets = JSON.parse(process.env.SECRETS_CONTEXT || "{}");
+            const excluded = new Set(["github_token", "GHCR_PULL_TOKEN"]);
+            const delimiter = "__SQUADIA_EOF__";
+            const envFile = process.env.GITHUB_ENV;
+            for (const [key, value] of Object.entries(secrets)) {
+              if (excluded.has(key)) continue;
+              const strValue = String(value);
+              if (strValue.split("\n").includes(delimiter)) {
+                console.error("Erro: o segredo " + key + " contem uma linha igual ao delimitador do heredoc (" + delimiter + "); abortando para nao corromper o GITHUB_ENV.");
+                process.exit(1);
+              }
+              fs.appendFileSync(envFile, key + "<<" + delimiter + "\n" + strValue + "\n" + delimiter + "\n");
+            }
+          '
+
+      - name: Executa o papel (qa-scenarios) — fase work
+        timeout-minutes: ${{ inputs.timeout_minutes }}
+        env:
+          ISSUE_KEY: ${{ inputs.issue_key }}
+          INSTANCE: ${{ inputs.instance }}
+          EXECUTION_ID: ${{ inputs.execution_id }}
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          SQUADIA_CONFIG_PATH: squadia.config.yml
+          TENANT_CLAUDE_MD_PATH: CLAUDE.md
+          WORKSPACE_DIR: /tmp/squadia-workspace
+          WORK_RESULT_PATH: /tmp/work-result.json
+        run: |
+          args=("$ISSUE_KEY")
+          [[ -n "$INSTANCE" ]] && args+=(--instance "$INSTANCE")
+          [[ -n "$EXECUTION_ID" ]] && args+=(--execution-id "$EXECUTION_ID")
+          node /app/dist/entrypoints/qa-scenarios.js "${args[@]}" --phase work
+
+      # if: always() garante que a fase cleanup roda mesmo se a fase work
+      # falhar, ou estourar o timeout do STEP acima (não o do job) — fecha a
+      # execução aberta pelo despacho e trata pausa por limite de uso em
+      # qualquer desfecho.
+      - name: Executa o papel (qa-scenarios) — fase cleanup
+        if: always()
+        env:
+          ISSUE_KEY: ${{ inputs.issue_key }}
+          INSTANCE: ${{ inputs.instance }}
+          EXECUTION_ID: ${{ inputs.execution_id }}
+          SQUADIA_CONFIG_PATH: squadia.config.yml
+          WORK_RESULT_PATH: /tmp/work-result.json
+        run: |
+          args=("$ISSUE_KEY")
+          [[ -n "$INSTANCE" ]] && args+=(--instance "$INSTANCE")
+          [[ -n "$EXECUTION_ID" ]] && args+=(--execution-id "$EXECUTION_ID")
+          node /app/dist/entrypoints/qa-scenarios.js "${args[@]}" --phase cleanup
