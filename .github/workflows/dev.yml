@@ -74,18 +74,18 @@ on:
         default: ""
       timeout_minutes:
         # Invariante (SQD-52): este timeout tem que ser MAIOR que o
-        # claudeTimeoutMinutes do core (default 60 min, fora deste repo).
-        # Se o job estourar antes do Claude CLI, o runner mata o processo
-        # sem deixar o wrapper do core capturar o erro e rodar o tratamento
-        # ruidoso (job summary, redação de segredos — SQD-9): falha "suja",
-        # sem diagnóstico. 75 min dá folga sobre os 60 do core para esse
-        # tratamento rodar depois do estouro. É o timeout do STEP "fase
-        # work" — o job inteiro tem folga fixa em cima disso (ver
-        # JOB_TIMEOUT_MINUTES abaixo), pro step "fase cleanup" ainda rodar
-        # mesmo se "fase work" estourar o dele.
+        # claudeTimeoutMinutes do core (default 90 min desde 18/08/2026,
+        # fora deste repo). Se o job estourar antes do Claude CLI, o runner
+        # mata o processo sem deixar o wrapper do core capturar o erro e
+        # rodar o tratamento ruidoso (job summary, redação de segredos —
+        # SQD-9): falha "suja", sem diagnóstico. 100 min dá folga sobre os
+        # 90 do core para esse tratamento rodar depois do estouro. É o
+        # timeout do STEP "fase work" — o job inteiro tem folga fixa em
+        # cima disso (ver JOB_TIMEOUT_MINUTES abaixo), pro step "fase
+        # cleanup" ainda rodar mesmo se "fase work" estourar o dele.
         description: "Timeout da fase \"work\", em minutos"
         type: number
-        default: 75
+        default: 100
 
 jobs:
   run:
