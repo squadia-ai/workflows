@@ -77,18 +77,25 @@ on:
         default: ""
       timeout_minutes:
         # Invariante (SQD-52): este timeout tem que ser MAIOR que o
-        # claudeTimeoutMinutes do core (default 60 min, fora deste repo).
-        # Se o job estourar antes do Claude CLI, o runner mata o processo
-        # sem deixar o wrapper do core capturar o erro e rodar o tratamento
-        # ruidoso (job summary, redação de segredos — SQD-9): falha "suja",
-        # sem diagnóstico. 75 min dá folga sobre os 60 do core para esse
-        # tratamento rodar depois do estouro. É o timeout do STEP "fase
-        # work" — o job inteiro tem folga fixa em cima disso (ver
-        # JOB_TIMEOUT_MINUTES abaixo), pro step "fase cleanup" ainda rodar
-        # mesmo se "fase work" estourar o dele.
+        # claudeTimeoutMinutes do core. Revisor não tem override próprio
+        # (`roles/reviewer/run.ts`) — herda o `DEFAULT_TIMEOUT_MINUTES` global
+        # de `claudeRunner.ts`, hoje 90 min (mesmo teto do Dev, desde
+        # 18/08/2026), não 60. Se o job estourar antes do Claude CLI, o
+        # runner mata o processo sem deixar o wrapper do core capturar o erro
+        # e rodar o tratamento ruidoso (job summary, redação de segredos —
+        # SQD-9): falha "suja", sem diagnóstico. 100 min dá a mesma folga de
+        # 10min que o Dev tem sobre os 90 do core. É o timeout do STEP "fase
+        # work" — o job inteiro tem folga fixa em cima disso (ver abaixo),
+        # pro step "fase cleanup" ainda rodar mesmo se "fase work" estourar o
+        # dele.
+        #
+        # Achado ao vivo, 21/08/2026: ficou em 75 (herdado do antigo teto de
+        # 60 do core) mesmo depois de o core subir pra 90 — violava a
+        # invariante acima sem ninguém notar, porque revisor nunca chega a
+        # rodar perto do próprio limite na prática (revisão é rápida).
         description: "Timeout da fase \"work\", em minutos"
         type: number
-        default: 75
+        default: 100
 
 jobs:
   run:
@@ -100,13 +107,13 @@ jobs:
         shell: bash
     # Fixo, não derivado do input: expressão do GitHub Actions não tem
     # operador aritmético (só comparação/lógica — confirmado na doc oficial
-    # antes de tentar `inputs.timeout_minutes + 10`, que falharia). 90min é
-    # folga fixa sobre o default de 75 do input acima (+10min do antigo job
-    # "cleanup" +5min de margem) — se o default do input mudar pra algo
-    # perto de 90, reajuste este valor junto (os dois não se calculam
-    # sozinhos). A folga é o que permite o step "fase cleanup" ainda rodar
-    # mesmo se "fase work" estourar o timeout do SEU step, não o do job.
-    timeout-minutes: 90
+    # antes de tentar `inputs.timeout_minutes + 10`, que falharia). 115min é
+    # folga fixa sobre o default de 100 do input acima (+10min do antigo job
+    # "cleanup" +5min de margem) — se o default do input mudar de novo,
+    # reajuste este valor junto (os dois não se calculam sozinhos). A folga é
+    # o que permite o step "fase cleanup" ainda rodar mesmo se "fase work"
+    # estourar o timeout do SEU step, não o do job.
+    timeout-minutes: 115
     concurrency:
       group: squadia-review-${{ inputs.issue_key }}
       cancel-in-progress: false

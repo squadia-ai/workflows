@@ -89,7 +89,12 @@ on:
 
 jobs:
   run:
-    runs-on: ubuntu-latest
+    # Larger runner (achado ao vivo, 21/08/2026): Dev é um dos dois papéis
+    # que de fato executam algo pesado (roda a suíte do repo antes de
+    # terminar cada rodada — ver `core/src/roles/dev/prompt.ts`), ao lado do
+    # QA execução; Revisor e Refino nunca rodam build/teste, então ficam no
+    # `ubuntu-latest` padrão.
+    runs-on: ubuntu-latest-m
     # Container jobs podem cair em sh (dash) como shell default; os scripts
     # destes workflows usam bash (contrato da imagem garante bash presente).
     defaults:
@@ -97,13 +102,18 @@ jobs:
         shell: bash
     # Fixo, não derivado do input: expressão do GitHub Actions não tem
     # operador aritmético (só comparação/lógica — confirmado na doc oficial
-    # antes de tentar `inputs.timeout_minutes + 10`, que falharia). 90min é
-    # folga fixa sobre o default de 75 do input acima (+10min do antigo job
-    # "cleanup" +5min de margem) — se o default do input mudar pra algo
-    # perto de 90, reajuste este valor junto (os dois não se calculam
-    # sozinhos). A folga é o que permite o step "fase cleanup" ainda rodar
-    # mesmo se "fase work" estourar o timeout do SEU step, não o do job.
-    timeout-minutes: 90
+    # antes de tentar `inputs.timeout_minutes + 10`, que falharia). 115min é
+    # folga fixa sobre o default de 100 do input acima (+10min do antigo job
+    # "cleanup" +5min de margem) — se o default do input mudar de novo,
+    # reajuste este valor junto (os dois não se calculam sozinhos). A folga é
+    # o que permite o step "fase cleanup" ainda rodar mesmo se "fase work"
+    # estourar o timeout do SEU step, não o do job.
+    #
+    # Ficou defasado da subida de 75→100 (18/08/2026, "Sobe o teto da fase
+    # work de 75 para 100 minutos") até agora: o job continuava travado em
+    # 90min, MENOR que o próprio step de 100min — o job matava o container
+    # antes do step "fase work" poder usar a folga que ganhou.
+    timeout-minutes: 115
     concurrency:
       group: squadia-dev-${{ inputs.issue_key }}
       cancel-in-progress: false

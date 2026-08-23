@@ -92,7 +92,12 @@ on:
 
 jobs:
   run:
-    runs-on: ubuntu-latest
+    # Larger runner (achado ao vivo, 21/08/2026): QA execução é um dos dois
+    # papéis que de fato executam algo pesado (roda build/testes/cenários
+    # sobre o estado mesclado, `core/src/roles/qaExecutor/prompt.ts`), ao
+    # lado do Dev; Revisor e Refino nunca rodam build/teste, ficam no
+    # `ubuntu-latest` padrão.
+    runs-on: ubuntu-latest-m
     # Container jobs podem cair em sh (dash) como shell default; os scripts
     # destes workflows usam bash (contrato da imagem garante bash presente).
     defaults:
