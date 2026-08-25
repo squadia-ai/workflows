@@ -1,5 +1,5 @@
 # Move as tags git moveis de canal (SQD-273/dev-prod split): cada push em
-# develop ou main reaponta a tag correspondente pro commit recem-chegado,
+# develop, release ou main reaponta a tag correspondente pro commit recem-chegado,
 # pra quem consome `uses: squadia-ai/workflows/.../X.yml@dev` (ou @prod)
 # sempre pegar o ultimo commit daquele canal sem intervencao manual — isso
 # elimina a classe de impedimento "mover tag e acao sensivel fora do
@@ -9,7 +9,7 @@ name: Move channel tag
 
 on:
   push:
-    branches: [develop, main]
+    branches: [develop, release, main]
 
 permissions:
   contents: write
@@ -23,11 +23,11 @@ jobs:
       - name: Determina a tag do canal a partir do branch
         id: channel
         run: |
-          if [[ "${{ github.ref_name }}" == "main" ]]; then
-            echo "tag=prod" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=dev" >> "$GITHUB_OUTPUT"
-          fi
+          case "${{ github.ref_name }}" in
+            main)    echo "tag=prod" >> "$GITHUB_OUTPUT" ;;
+            release) echo "tag=beta" >> "$GITHUB_OUTPUT" ;;
+            *)       echo "tag=dev"  >> "$GITHUB_OUTPUT" ;;
+          esac
 
       - name: Reaponta a tag do canal
         env:
