@@ -20,10 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Nenhum `${{ }}` dentro do `run:` (regra de segurança deste repo): o
+      # nome do branch entra por `env:` e é lido do ambiente.
       - name: Determina a tag do canal a partir do branch
         id: channel
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          case "${{ github.ref_name }}" in
+          case "$REF_NAME" in
             main)    echo "tag=prod" >> "$GITHUB_OUTPUT" ;;
             release) echo "tag=beta" >> "$GITHUB_OUTPUT" ;;
             *)       echo "tag=dev"  >> "$GITHUB_OUTPUT" ;;
@@ -37,3 +41,21 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -f "${CHANNEL_TAG}"
           git push origin "${CHANNEL_TAG}" --force
+
+  # A publicação do PRÓPRIO `workflows` é o reapontamento da tag do canal: é a
+  # tag (@dev/@beta/@prod) que os stubs do ops consomem, então o instante em
+  # que ela passa a apontar pro commit novo é o instante em que ele está no ar
+  # — não o merge. Por isso o callback (SQD-437) vem depois de `move-tag`, e
+  # não junto dele.
+  #
+  # Só roda onde a Variable `SQUADIA_PLATFORM_URL` existe, mesma convenção
+  # opcional de `AWS_DATAPLANE_ROLE_ARN` nos workflows de papel: repositório
+  # sem ela não muda de comportamento nenhum.
+  reportar-publicacao:
+    needs: move-tag
+    if: vars.SQUADIA_PLATFORM_URL != ''
+    uses: ./.github/workflows/publish-callback.yml
+    with:
+      platform_url: ${{ vars.SQUADIA_PLATFORM_URL }}
+      channel: ${{ github.ref_name }}
+    secrets: inherit
