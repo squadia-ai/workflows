@@ -123,7 +123,7 @@ Enquanto um repositório não reporta, a tela mostra o canal dele como **"public
 
 ### Regra de segurança
 
-Nenhum workflow deste repo interpola `${{ inputs.* }}`, `${{ vars.* }}` ou `${{ secrets.* }}` diretamente dentro de um bloco `run:`. Todo dado externo entra via `env:` e é lido do ambiente (`$VAR`) dentro do script — isso evita injeção de shell via valores controlados por config/secret. Expressões `${{ }}` só aparecem em campos estruturados do YAML (`image`, `concurrency.group`, `timeout-minutes`, `container.credentials`, `env:`).
+Nenhum workflow deste repo interpola `${{ inputs.* }}`, `${{ vars.* }}`, `${{ secrets.* }}` ou `${{ github.* }}` diretamente dentro de um bloco `run:`. Todo dado externo entra via `env:` e é lido do ambiente (`$VAR`) dentro do script — isso evita injeção de shell via valores controlados por config/secret. Expressões `${{ }}` só aparecem em campos estruturados do YAML (`image`, `concurrency.group`, `timeout-minutes`, `container.credentials`, `env:`).
 
 ## Contrato do stub no repo ops
 
