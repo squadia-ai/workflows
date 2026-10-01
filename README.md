@@ -6,10 +6,12 @@ Este repositório é **público** e não contém nenhuma lógica de negócio, pr
 
 ## Como funciona (visão geral)
 
-Cada tenant tem um repo "ops" (privado, do cliente) com:
-- `squadia.config.yml` e `CLAUDE.md` na raiz;
+Cada tenant tem um repo "ops" — `<dono>/<slug>-ops`, privado — com:
+- `squadia.config.yml` e `SQUADIA.md` (memória da squad, ADR-008) na raiz — tenant ainda não migrado pode ter só o `CLAUDE.md` antigo, lido como transição;
 - GitHub Secrets/Variables com credenciais do tenant (ver seção abaixo);
 - stubs de workflow curtos em `.github/workflows/`, que apenas fazem `uses:` para um dos workflows deste repo, com `secrets: inherit`.
+
+O **dono** do repo ops (org ou usuário do GitHub) é configurado por tenant na squadia platform (ADR-010 §4.1) — por padrão a org do squadia; num tenant Connect, a org do próprio cliente. O nome continua `<slug>-ops`. Os workflows deste repo não montam esse nome nem dependem do dono: quem os chama já é o repo ops (o `actions/checkout` faz checkout do próprio caller), e o despacho da plataforma é quem resolve `<dono>/<slug>-ops` antes do `workflow_dispatch`. Nenhum input novo é necessário — ausência de configuração equivale ao dono padrão.
 
 O trabalho pesado (rodar o papel, decidir concurrency, exportar credenciais para o processo) acontece dentro do workflow reusable, dentro de um container rodando a imagem privada do core.
 
@@ -46,12 +48,13 @@ O `refine.yml` voltou ao modelo 2-jobs padrão na ADR-017 — o Quig é despacha
 
 ### Contrato de ambiente dos entrypoints
 
-O checkout do repo **caller** (o ops do tenant) é quem fornece `squadia.config.yml` e `CLAUDE.md` na raiz. Os workflows deste repo exportam as seguintes env vars antes de chamar o entrypoint:
+O checkout do repo **caller** (o ops do tenant) é quem fornece `squadia.config.yml` e a memória da squad (`SQUADIA.md`; na transição, `CLAUDE.md`) na raiz. Os workflows deste repo exportam as seguintes env vars antes de chamar o entrypoint:
 
 | Env var | Origem |
 |---|---|
 | `SQUADIA_CONFIG_PATH` | fixo: `squadia.config.yml` (path no checkout do caller) |
-| `TENANT_CLAUDE_MD_PATH` | fixo: `CLAUDE.md` (opcional, path no checkout do caller) |
+| `TENANT_CLAUDE_MD_PATH` | fixo: `CLAUDE.md` (opcional, path no checkout do caller) — leitura de transição da memória da squad: o core só o usa quando o `SQUADIA.md` não existe (ADR-008) |
+| `TENANT_SQUADIA_MD_PATH` | não exportado: ausente, o core usa `SQUADIA.md` na raiz do checkout do caller (diretório de trabalho do step) — é a memória da squad |
 | `WORKSPACE_DIR` | fixo: `/tmp/squadia-workspace` (dir de trabalho dos clones que o entrypoint faz) |
 | `JIRA_BASE_URL` | `vars.JIRA_BASE_URL` do repo caller (Actions **Variable**, não secret) |
 | `ISSUE_KEY` / `INSTANCE` / `FREE` | dos inputs do workflow_call |
@@ -183,4 +186,4 @@ Todos esses secrets/variables chegam aos workflows reusable via `secrets: inheri
 
 ## Versionamento
 
-Os stubs do ops referenciam este repo por tag: `@dev` (HEAD da branch `develop` — squad trabalha aqui, pode quebrar; reapontada automaticamente a cada push via `move-channel-tag.yml`) ou `@prod` (HEAD da branch `main` — só existe quando o PO decide promover, mesclando `develop` → `main`; também reapontada automaticamente). Tenant 0 (`squadia-ai/ops`, dogfooding) consome `@dev` por design. Tenants de cliente consomem `@prod`. Tags imutáveis por versão semântica (`@v1`, `@v2`, ...) ficam para quando o contrato estabilizar ainda mais.
+Os stubs do ops referenciam este repo por tag: `@dev` (HEAD da branch `develop` — squad trabalha aqui, pode quebrar; reapontada automaticamente a cada push via `move-channel-tag.yml`) ou `@prod` (HEAD da branch `main` — só existe quando o PO decide promover, mesclando `develop` → `main`; também reapontada automaticamente). Tenant 0 (`squadia-ai/squadia-ops`, dogfooding) consome `@dev` por design. Tenants de cliente consomem `@prod`. Tags imutáveis por versão semântica (`@v1`, `@v2`, ...) ficam para quando o contrato estabilizar ainda mais.
