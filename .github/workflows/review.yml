@@ -175,6 +175,12 @@ jobs:
               }
               fs.appendFileSync(envFile, key + "<<" + delimiter + "\n" + strValue + "\n" + delimiter + "\n");
             }
+            // Executor criado pelo criar-tenant do platform guarda a credencial de
+            // serviço do tenant como SQUADIA_SERVICE_TOKEN; o core lê
+            // PLATFORM_API_TOKEN. Sem esta ponte, o tenant novo não fala com a API.
+            if (!secrets.PLATFORM_API_TOKEN && secrets.SQUADIA_SERVICE_TOKEN) {
+              fs.appendFileSync(envFile, "PLATFORM_API_TOKEN<<" + delimiter + "\n" + String(secrets.SQUADIA_SERVICE_TOKEN) + "\n" + delimiter + "\n");
+            }
           '
 
       - name: Executa o papel (review) — fase work
