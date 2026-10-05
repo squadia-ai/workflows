@@ -6,10 +6,12 @@ Este repositório é **público** e não contém nenhuma lógica de negócio, pr
 
 ## Como funciona (visão geral)
 
-Cada tenant tem um repo "ops" (privado, do cliente) com:
-- `squadia.config.yml` e `CLAUDE.md` na raiz;
+Cada tenant tem um repo "ops" — `<dono>/<slug>-ops`, privado — com:
+- `squadia.config.yml` e `SQUADIA.md` (memória da squad, ADR-008) na raiz — tenant ainda não migrado pode ter só o `CLAUDE.md` antigo, lido como transição;
 - GitHub Secrets/Variables com credenciais do tenant (ver seção abaixo);
 - stubs de workflow curtos em `.github/workflows/`, que apenas fazem `uses:` para um dos workflows deste repo, com `secrets: inherit`.
+
+O **dono** do repo ops (org ou usuário do GitHub) é configurado por tenant na squadia platform (ADR-010 §4.1) — por padrão a org do squadia; num tenant Connect, a org do próprio cliente. O nome continua `<slug>-ops`. Os workflows deste repo não montam esse nome nem dependem do dono: quem os chama já é o repo ops (o `actions/checkout` faz checkout do próprio caller), e o despacho da plataforma é quem resolve `<dono>/<slug>-ops` antes do `workflow_dispatch`. Nenhum input novo é necessário — ausência de configuração equivale ao dono padrão.
 
 O trabalho pesado (rodar o papel, decidir concurrency, exportar credenciais para o processo) acontece dentro do workflow reusable, dentro de um container rodando a imagem privada do core.
 
@@ -22,8 +24,9 @@ O trabalho pesado (rodar o papel, decidir concurrency, exportar credenciais para
 | `review.yml` | Revisor (2 jobs: `work` + `cleanup`) | `issue_key` (required), `image`, `instance`, `timeout_minutes` (do job `work`, default 75) | `squadia-review-<issue_key>` |
 | `qa-scenarios.yml` | QA (gerador de cenários, 2 jobs: `work` + `cleanup`) | `issue_key` (required), `image`, `instance`, `timeout_minutes` (do job `work`, default 75) | `squadia-qa-scenarios-<issue_key>` |
 | `qa-execute.yml` | QA (executor — build/testes/merge, 2 jobs: `work` + `cleanup`) | `issue_key` (required), `image`, `instance`, `timeout_minutes` (do job `work`, default 75) | `squadia-qa-execute-<issue_key>` |
+| `publish-callback.yml` | Nenhum papel — reporta PUBLICAÇÃO de canal à squadia platform (SQD-437) | `platform_url` (required), `channel`, `commit`, `repository` | — |
 
-Os cinco rodam dentro de um `container:` com a imagem do core (contrato de entrypoints abaixo) e declaram `permissions: id-token: write` no job (além de `contents: read`), necessário pro step opcional de credenciais AWS via OIDC — ver "Credenciais AWS do data plane (OIDC)" abaixo. Todos dividem isso em dois jobs (ver abaixo): só o job `cleanup` declara `id-token: write`.
+Os cinco workflows de PAPEL rodam dentro de um `container:` com a imagem do core (contrato de entrypoints abaixo) e declaram `permissions: id-token: write` no job (além de `contents: read`), necessário pro step opcional de credenciais AWS via OIDC — ver "Credenciais AWS do data plane (OIDC)" abaixo. Todos dividem isso em dois jobs (ver abaixo): só o job `cleanup` declara `id-token: write`. `publish-callback.yml` não é um deles: não roda papel nenhum, não usa container e não pede permissão nenhuma — ver a seção própria dele abaixo.
 
 > `orchestrate-worker.yml`/`orchestrate-dispatcher.yml` (orquestrador baseado em Jira, despacho por polling) foram removidos — o despacho real agora é o endpoint `/dispatch` da squadia platform (squadia-ai/platform), disparado a partir de escritas relevantes no board (ADR-007 §7.1/§7.3), não mais por um workflow de orquestrador rodando neste repo.
 
@@ -45,12 +48,13 @@ O `refine.yml` voltou ao modelo 2-jobs padrão na ADR-017 — o Quig é despacha
 
 ### Contrato de ambiente dos entrypoints
 
-O checkout do repo **caller** (o ops do tenant) é quem fornece `squadia.config.yml` e `CLAUDE.md` na raiz. Os workflows deste repo exportam as seguintes env vars antes de chamar o entrypoint:
+O checkout do repo **caller** (o ops do tenant) é quem fornece `squadia.config.yml` e a memória da squad (`SQUADIA.md`; na transição, `CLAUDE.md`) na raiz. Os workflows deste repo exportam as seguintes env vars antes de chamar o entrypoint:
 
 | Env var | Origem |
 |---|---|
 | `SQUADIA_CONFIG_PATH` | fixo: `squadia.config.yml` (path no checkout do caller) |
-| `TENANT_CLAUDE_MD_PATH` | fixo: `CLAUDE.md` (opcional, path no checkout do caller) |
+| `TENANT_CLAUDE_MD_PATH` | fixo: `CLAUDE.md` (opcional, path no checkout do caller) — leitura de transição da memória da squad: o core só o usa quando o `SQUADIA.md` não existe (ADR-008) |
+| `TENANT_SQUADIA_MD_PATH` | não exportado: ausente, o core usa `SQUADIA.md` na raiz do checkout do caller (diretório de trabalho do step) — é a memória da squad |
 | `WORKSPACE_DIR` | fixo: `/tmp/squadia-workspace` (dir de trabalho dos clones que o entrypoint faz) |
 | `JIRA_BASE_URL` | `vars.JIRA_BASE_URL` do repo caller (Actions **Variable**, não secret) |
 | `ISSUE_KEY` / `INSTANCE` / `FREE` | dos inputs do workflow_call |
@@ -76,9 +80,53 @@ A infra AWS do produto (tabelas DynamoDB do `StateStore`, roles) mora na org do 
 - **`permissions: id-token: write` é obrigatório** no job destes cinco workflows (e no job do stub caller que os invoca — ver seção de permissions do stub abaixo), porque o token OIDC do job vem dessa permissão. **Erro típico quando o caller esquece**: o step `configure-aws-credentials` falha com `Error: Unable to get ACTIONS_ID_TOKEN_REQUEST_URL env variable` — a permissão não foi concedida, então o runner nunca populou a env var que a action usa pra pedir o token OIDC.
 - **A credencial não chega ao Claude CLI**: o entrypoint roda no core, cujo wrapper controla explicitamente que env vars repassa pro subprocesso do `claude` CLI (allowlist do `untrusted.ts`, fora deste repo). `AWS_*` nunca fez parte dessa allowlist — só o código TypeScript do wrapper acessa o DynamoDB, nunca o LLM — e esta mudança não adiciona `AWS_*` lá.
 
+### Callback de publicação de canal (`publish-callback.yml`)
+
+A squadia platform tem uma tela administrativa de promoção de canais (`develop` → `release` → `main`) dos sete repositórios do squadia. Ela precisa distinguir dois estados que não são a mesma coisa:
+
+- **mesclado** — o PR de promoção entrou no canal. Isso a plataforma lê direto do GitHub.
+- **publicado** — aquele commit está no ar. Isso **ninguém** consegue inferir do GitHub de forma uniforme: cada repositório publica de um jeito (app hospedado na Vercel, imagem no GHCR, site estático, tag móvel de workflow).
+
+`publish-callback.yml` é o único sinal de "publicado" para os sete repositórios. Chame-o **no fim do que publica**, nunca no merge:
+
+```yaml
+jobs:
+  publicar:
+    # ... o que de fato publica ...
+
+  reportar-publicacao:
+    needs: publicar
+    # Repositório sem a Variable simplesmente não reporta — nenhuma mudança
+    # de comportamento, mesma convenção opcional de AWS_DATAPLANE_ROLE_ARN.
+    if: vars.SQUADIA_PLATFORM_URL != ''
+    uses: squadia-ai/workflows/.github/workflows/publish-callback.yml@dev
+    with:
+      platform_url: ${{ vars.SQUADIA_PLATFORM_URL }}
+      channel: ${{ github.ref_name }}
+    secrets: inherit
+```
+
+- **Variable `SQUADIA_PLATFORM_URL`** (não sensível): URL base da plataforma que recebe o relato. O registro é compartilhado pelos três canais da plataforma, então qualquer um deles serve — o que não pode é apontar para lugar nenhum.
+- **Secret `PUBLISH_SECRET`**: segredo compartilhado, vai em `Authorization: Bearer`. Chega por `secrets: inherit`.
+- `channel`, `commit` e `repository` são opcionais: sem eles, valem `github.ref_name`, `github.sha` e `github.repository`. Canal fora de `develop`/`release`/`main` **falha o passo** em vez de reportar — um branch de feature chegando ali significa gatilho errado no chamador.
+- **O passo falha quando a plataforma recusa o relato**, de propósito: publicação não registrada deixa a tela mostrando "aguardando publicação" para sempre, que é exatamente a falha muda que este mecanismo existe pra eliminar.
+
+#### Qual etapa conta como "publicado", repositório a repositório
+
+O evento de publicação varia, e por isso o callback é chamado por quem publica — não por este repositório em nome dos outros:
+
+| Repositório | O que é publicar | Callback ligado? |
+|---|---|---|
+| `workflows` | O reapontamento da tag móvel do canal (`@dev`/`@beta`/`@prod`): é a tag que os stubs do ops consomem | **sim** — `move-channel-tag.yml`, job `reportar-publicacao` |
+| `core` | A publicação da imagem no GHCR com a tag do canal (`:dev`/`:beta`/`:prod`) | ainda não — passo a acrescentar no release do `core` |
+| `platform`, `gateway`, `landing` | O deploy do canal concluído na Vercel | ainda não — o deploy não é um workflow deste repo; entra por um gatilho de deploy bem-sucedido no repositório correspondente |
+| `hq`, `ops` | O merge no canal já é o que vale (não há build nem deploy) | ainda não — passo a acrescentar no repositório correspondente |
+
+Enquanto um repositório não reporta, a tela mostra o canal dele como **"publicação não reportada"** — estado distinto de "aguardando publicação", justamente para que a ausência do callback não se disfarce de atraso de deploy.
+
 ### Regra de segurança
 
-Nenhum workflow deste repo interpola `${{ inputs.* }}`, `${{ vars.* }}` ou `${{ secrets.* }}` diretamente dentro de um bloco `run:`. Todo dado externo entra via `env:` e é lido do ambiente (`$VAR`) dentro do script — isso evita injeção de shell via valores controlados por config/secret. Expressões `${{ }}` só aparecem em campos estruturados do YAML (`image`, `concurrency.group`, `timeout-minutes`, `container.credentials`, `env:`).
+Nenhum workflow deste repo interpola `${{ inputs.* }}`, `${{ vars.* }}`, `${{ secrets.* }}` ou `${{ github.* }}` diretamente dentro de um bloco `run:`. Todo dado externo entra via `env:` e é lido do ambiente (`$VAR`) dentro do script — isso evita injeção de shell via valores controlados por config/secret. Expressões `${{ }}` só aparecem em campos estruturados do YAML (`image`, `concurrency.group`, `timeout-minutes`, `container.credentials`, `env:`).
 
 ## Contrato do stub no repo ops
 
@@ -138,4 +186,4 @@ Todos esses secrets/variables chegam aos workflows reusable via `secrets: inheri
 
 ## Versionamento
 
-Os stubs do ops referenciam este repo por tag: `@dev` (HEAD da branch `develop` — squad trabalha aqui, pode quebrar; reapontada automaticamente a cada push via `move-channel-tag.yml`) ou `@prod` (HEAD da branch `main` — só existe quando o PO decide promover, mesclando `develop` → `main`; também reapontada automaticamente). Tenant 0 (`squadia-ai/ops`, dogfooding) consome `@dev` por design. Tenants de cliente consomem `@prod`. Tags imutáveis por versão semântica (`@v1`, `@v2`, ...) ficam para quando o contrato estabilizar ainda mais.
+Os stubs do ops referenciam este repo por tag: `@dev` (HEAD da branch `develop` — squad trabalha aqui, pode quebrar; reapontada automaticamente a cada push via `move-channel-tag.yml`) ou `@prod` (HEAD da branch `main` — só existe quando o PO decide promover, mesclando `develop` → `main`; também reapontada automaticamente). Tenant 0 (`squadia-ai/squadia-ops`, dogfooding) consome `@dev` por design. Tenants de cliente consomem `@prod`. Tags imutáveis por versão semântica (`@v1`, `@v2`, ...) ficam para quando o contrato estabilizar ainda mais.
