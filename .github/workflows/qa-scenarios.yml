@@ -66,6 +66,10 @@ on:
         description: "Imagem Docker do core squadia usada para rodar o papel"
         type: string
         default: "ghcr.io/squadia-ai/core:dev"
+      environment_variant:
+        description: "Variante do ambiente de execucao: padrao ou flutter (SQD-686). Com flutter, a tag da imagem ganha o sufixo -flutter"
+        type: string
+        default: "padrao"
       instance:
         description: "Nome da instancia do papel na squadia.config.yml (default: a primeira)"
         type: string
@@ -112,11 +116,20 @@ jobs:
     permissions:
       contents: read
     container:
-      image: ${{ inputs.image }}
+      # Variante flutter = mesma tag publicada com o sufixo -flutter (SQD-686).
+      # Valor diferente de flutter usa a imagem padrao aqui; o primeiro step
+      # rejeita o que estiver fora da lista fechada.
+      image: ${{ inputs.environment_variant == 'flutter' && format('{0}-flutter', inputs.image) || inputs.image }}
       credentials:
         username: x-access-token
         password: ${{ secrets.GHCR_PULL_TOKEN }}
     steps:
+      - name: Valida variante do ambiente
+        env:
+          ENVIRONMENT_VARIANT: ${{ inputs.environment_variant }}
+        run: |
+          [[ "$ENVIRONMENT_VARIANT" == "padrao" || "$ENVIRONMENT_VARIANT" == "flutter" ]] || { echo "environment_variant invalida (use padrao ou flutter)"; exit 1; }
+
       - name: Valida issue key
         env:
           ISSUE_KEY: ${{ inputs.issue_key }}
