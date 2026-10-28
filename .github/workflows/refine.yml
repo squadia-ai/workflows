@@ -85,6 +85,10 @@ on:
         description: "Imagem Docker do core squadia usada para rodar o papel"
         type: string
         default: "ghcr.io/squadia-ai/core:dev"
+      auth_mode:
+        description: "Modo de credencial do Claude: subscription (tenant interno, assinatura) ou api_key (tenant de cliente, exige o secret ANTHROPIC_API_KEY no executor; nunca usa a assinatura)"
+        type: string
+        default: "subscription"
       environment_variant:
         description: "Variante do ambiente de execucao: padrao ou flutter (SQD-686). Com flutter, a tag da imagem ganha o sufixo -flutter"
         type: string
@@ -147,6 +151,12 @@ jobs:
         username: x-access-token
         password: ${{ secrets.GHCR_PULL_TOKEN }}
     steps:
+      - name: Valida modo de credencial
+        env:
+          AUTH_MODE: ${{ inputs.auth_mode }}
+        run: |
+          [[ "$AUTH_MODE" == "subscription" || "$AUTH_MODE" == "api_key" ]] || { echo "auth_mode invalido (use subscription ou api_key)"; exit 1; }
+
       - name: Valida variante do ambiente
         env:
           ENVIRONMENT_VARIANT: ${{ inputs.environment_variant }}
@@ -226,6 +236,7 @@ jobs:
           EXECUTION_ID: ${{ inputs.execution_id }}
           JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
           SQUADIA_CONFIG_PATH: squadia.config.yml
+          SQUADIA_AUTH_MODE: ${{ inputs.auth_mode }}
           TENANT_CLAUDE_MD_PATH: CLAUDE.md
           WORKSPACE_DIR: /tmp/squadia-workspace
           WORK_RESULT_PATH: /tmp/work-result.json
@@ -247,6 +258,7 @@ jobs:
           INSTANCE: ${{ inputs.instance }}
           EXECUTION_ID: ${{ inputs.execution_id }}
           SQUADIA_CONFIG_PATH: squadia.config.yml
+          SQUADIA_AUTH_MODE: ${{ inputs.auth_mode }}
           WORK_RESULT_PATH: /tmp/work-result.json
         run: |
           args=("$ISSUE_KEY")
