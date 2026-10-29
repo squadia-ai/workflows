@@ -2,7 +2,7 @@ name: Squadia - Dev (reusable)
 
 # Reusable workflow chamado pelo repo "ops" de um tenant via:
 #   uses: squadia-ai/workflows/.github/workflows/dev.yml@dev
-#   secrets: inherit
+#   secrets: (um a um, ou inherit na mesma org)
 #
 # UM job (não dois): até 14/08/2026 este workflow rodava "work" (o agente:
 # clone, Claude, commit, PR) e "cleanup" (fecha a execução no despacho,
@@ -48,10 +48,16 @@ name: Squadia - Dev (reusable)
 # a reconciliação de `execution` órfã do lado da plataforma (gap conhecido,
 # ainda não implementado), não a topologia de jobs do GitHub Actions.
 #
-# Nao declara bloco `secrets:` no workflow_call de proposito: o contrato
-# e o caller usar `secrets: inherit`, entao todos os secrets do caller
-# ficam disponiveis no contexto `secrets` deste workflow sem precisar
-# listar cada nome aqui (os sufixos de instancia variam por tenant).
+# Segredos DECLARADOS em `on.workflow_call.secrets` (como em
+# `assess-hops.yml`): o executor gerado pela plataforma (`executor/
+# templates.ts`, squadia-ai/platform) repassa um a um, porque `secrets:
+# inherit` nao vale entre organizacoes, e o GitHub rejeita (startup_failure,
+# "Invalid secret, X is not defined in the referenced workflow") todo segredo
+# passado explicitamente que nao esteja declarado aqui. Quem chama com
+# `secrets: inherit` (executores da propria org) continua recebendo TODOS os
+# segredos do caller, declarados ou nao — a declaracao so valida o repasse
+# explicito. Ao passar a ler um segredo novo, declare-o aqui (required:
+# false, salvo o que todo caller precisa ter).
 
 on:
   workflow_call:
@@ -94,6 +100,28 @@ on:
         description: "Timeout da fase \"work\", em minutos"
         type: number
         default: 100
+    secrets:
+      PLATFORM_API_TOKEN:
+        description: "Credencial de serviço do tenant na squadia platform (o executor gerado pela plataforma a repassa a partir de SQUADIA_SERVICE_TOKEN)"
+        required: false
+      SQUADIA_SERVICE_TOKEN:
+        description: "Mesmo papel de PLATFORM_API_TOKEN, no nome que o executor criado pela plataforma guarda (ponte no step de export)"
+        required: false
+      ANTHROPIC_API_KEY:
+        description: "Chave de API Anthropic do tenant (auth_mode api_key)"
+        required: false
+      CLAUDE_CODE_OAUTH_TOKEN_DEV:
+        description: "Credencial Claude (assinatura) do dev"
+        required: false
+      GH_APP_PRIVATE_KEY_DEV:
+        description: "Chave privada da GitHub App do dev"
+        required: false
+      NPM_PACKAGES_READ_TOKEN:
+        description: "Token de leitura de packages npm privados (SQD-486/487)"
+        required: false
+      GHCR_PULL_TOKEN:
+        description: "Token só para o pull da imagem do core"
+        required: true
 
 jobs:
   run:
