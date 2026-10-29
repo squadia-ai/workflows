@@ -121,7 +121,8 @@ O evento de publicação varia, e por isso o callback é chamado por quem public
 |---|---|---|
 | `workflows` | O reapontamento da tag móvel do canal (`@dev`/`@beta`/`@prod`): é a tag que os stubs do ops consomem | **sim** — `move-channel-tag.yml`, job `reportar-publicacao` |
 | `core` | A publicação da imagem no GHCR com a tag do canal (`:dev`/`:beta`/`:prod`) | ainda não — passo a acrescentar no release do `core` |
-| `platform`, `gateway`, `landing` | O deploy do canal concluído na Vercel | ainda não — o deploy não é um workflow deste repo; entra por um gatilho de deploy bem-sucedido no repositório correspondente |
+| `platform`, `gateway` | O deploy do canal concluído na Vercel | **sim** (SQD-825) — `avisar-publicacao.yml` em cada repositório, disparado por `deployment_status` (só nos três canais; prévia de branch é descartada no `if:` do job) e chamando este callback no sucesso; na falha grava um status de commit `failure` (este callback só carrega sucesso) |
+| `landing` | O deploy do canal concluído na Vercel | ainda não — repositório fora dos componentes da SQD-825; pendente (ver `hq/docs/enderecos.md`) |
 | `hq`, `ops` | O merge no canal já é o que vale (não há build nem deploy) | ainda não — passo a acrescentar no repositório correspondente |
 
 Enquanto um repositório não reporta, a tela mostra o canal dele como **"publicação não reportada"** — estado distinto de "aguardando publicação", justamente para que a ausência do callback não se disfarce de atraso de deploy.
