@@ -25,6 +25,7 @@ O trabalho pesado (rodar o papel, decidir concurrency, exportar credenciais para
 | `qa-scenarios.yml` | QA (gerador de cenários, 2 jobs: `work` + `cleanup`) | `issue_key` (required), `image`, `instance`, `timeout_minutes` (do job `work`, default 75) | `squadia-qa-scenarios-<issue_key>` |
 | `qa-execute.yml` | QA (executor — build/testes/merge, 2 jobs: `work` + `cleanup`) | `issue_key` (required), `image`, `instance`, `timeout_minutes` (do job `work`, default 75) | `squadia-qa-execute-<issue_key>` |
 | `publish-callback.yml` | Nenhum papel — reporta PUBLICAÇÃO de canal à squadia platform (SQD-437) | `platform_url` (required), `channel`, `commit`, `repository` | — |
+| `assess-hops.yml` | Nenhum papel — avalia os SALTOS DE PROMOÇÃO de um repositório por git, no ambiente do tenant, e grava só metadados na squadia platform (SQD-779, ADR-026 §6.3) | `repository` (required, nome lógico no catálogo), `image`, `timeout_minutes` (default 15) | `squadia-assess-hops-<repository>` |
 
 Os cinco workflows de PAPEL rodam dentro de um `container:` com a imagem do core (contrato de entrypoints abaixo) e declaram `permissions: id-token: write` no job (além de `contents: read`), necessário pro step opcional de credenciais AWS via OIDC — ver "Credenciais AWS do data plane (OIDC)" abaixo. Todos dividem isso em dois jobs (ver abaixo): só o job `cleanup` declara `id-token: write`. `publish-callback.yml` não é um deles: não roda papel nenhum, não usa container e não pede permissão nenhuma — ver a seção própria dele abaixo.
 
@@ -45,6 +46,7 @@ O `refine.yml` voltou ao modelo 2-jobs padrão na ADR-017 — o Quig é despacha
   - `node /app/dist/entrypoints/review.js <ISSUE-KEY> [--instance NOME]`
   - `node /app/dist/entrypoints/qa-scenarios.js <ISSUE-KEY> [--instance NOME]`
   - `node /app/dist/entrypoints/qa-execute.js <ISSUE-KEY> [--instance NOME]`
+  - `node /app/dist/entrypoints/assess-hops.js --repository <NOME>` (avaliação de saltos — não é papel: sem Claude, sem item; credenciais `PLATFORM_API_TOKEN` e a App de leitura `GH_APP_*_LT`)
 
 ### Contrato de ambiente dos entrypoints
 
