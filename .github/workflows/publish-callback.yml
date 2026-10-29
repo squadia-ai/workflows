@@ -1,0 +1,124 @@
+name: Squadia - Publish callback (reusable)
+
+# Callback de PUBLICAÇÃO de canal (SQD-437): avisa a squadia platform que um
+# commit de um canal (`develop`/`release`/`main`) chegou de fato ao ar.
+#
+# Existe porque "mesclado" e "publicado" são estados diferentes, e só o
+# primeiro é observável no GitHub. A forma de publicar muda por repositório
+# (app hospedado, imagem no registry, site estático, tag móvel de workflow),
+# então não há como a plataforma inferir publicação de forma uniforme. Um
+# reusable só, chamado no FIM do processo de publicação de cada repositório,
+# evita que a plataforma precise integrar com N provedores de deploy.
+#
+# Chame este workflow no último passo do que PUBLICA — nunca no merge. Merge
+# é "mesclado"; o que este callback reporta é "publicado", e a tela de
+# promoção mostra os dois separados justamente porque já houve promoção que
+# ficou horas sem publicar sem ninguém perceber.
+#
+# O passo FALHA quando a plataforma não aceita o relato, de propósito: uma
+# publicação que não foi registrada deixa a tela dizendo "aguardando
+# publicação" para sempre — a mesma falha muda que este mecanismo existe pra
+# eliminar. Melhor um passo vermelho no Actions do que um estado errado.
+#
+# Nada aqui é sensível nem específico de cliente: o repositório continua
+# público, e o único segredo (`PUBLISH_SECRET`) chega por `secrets:` do
+# chamador, nunca escrito neste arquivo.
+
+on:
+  workflow_call:
+    inputs:
+      platform_url:
+        description: "URL base da squadia platform que recebe o relato (ex.: https://dev.squadia.ai)."
+        required: true
+        type: string
+      channel:
+        description: "Canal publicado (develop, release ou main). Vazio = o branch que disparou o workflow."
+        required: false
+        type: string
+        default: ""
+      commit:
+        description: "SHA completo do commit publicado. Vazio = o SHA do workflow."
+        required: false
+        type: string
+        default: ""
+      repository:
+        description: "Repositório publicado, no formato `owner/repo`. Vazio = o repositório do workflow."
+        required: false
+        type: string
+        default: ""
+    secrets:
+      PUBLISH_SECRET:
+        description: "Segredo compartilhado com a plataforma (vai em `Authorization: Bearer`)."
+        required: true
+
+jobs:
+  reportar:
+    runs-on: ubuntu-latest
+    # Não lê nem escreve nada no repositório: só faz uma chamada HTTP.
+    permissions: {}
+    steps:
+      # Nenhum `${{ }}` dentro do `run:` (regra de segurança deste repo): todo
+      # dado externo entra por `env:` e é lido do ambiente.
+      - name: Reporta publicação à squadia platform
+        env:
+          PLATFORM_URL: ${{ inputs.platform_url }}
+          CHANNEL_INPUT: ${{ inputs.channel }}
+          COMMIT_INPUT: ${{ inputs.commit }}
+          REPOSITORY_INPUT: ${{ inputs.repository }}
+          DEFAULT_CHANNEL: ${{ github.ref_name }}
+          DEFAULT_COMMIT: ${{ github.sha }}
+          DEFAULT_REPOSITORY: ${{ github.repository }}
+          PUBLISH_SECRET: ${{ secrets.PUBLISH_SECRET }}
+        run: |
+          set -euo pipefail
+
+          canal="${CHANNEL_INPUT:-}"
+          [ -n "$canal" ] || canal="$DEFAULT_CHANNEL"
+          commit="${COMMIT_INPUT:-}"
+          [ -n "$commit" ] || commit="$DEFAULT_COMMIT"
+          repositorio="${REPOSITORY_INPUT:-}"
+          [ -n "$repositorio" ] || repositorio="$DEFAULT_REPOSITORY"
+          base="${PLATFORM_URL%/}"
+
+          if [ -z "$base" ]; then
+            echo "::error::platform_url vazio — informe a URL base da squadia platform"
+            exit 1
+          fi
+
+          # Canal desconhecido é erro, não "reporta assim mesmo": um branch de
+          # feature chegando aqui significa que o chamador ligou o callback num
+          # gatilho errado, e reportar publicação de um branch qualquer sujaria
+          # o estado que a tela mostra.
+          case "$canal" in
+            develop|release|main) ;;
+            *)
+              echo "::error::'$canal' não é canal de promoção (develop, release ou main) — este callback só roda na publicação de um canal"
+              exit 1
+              ;;
+          esac
+
+          corpo="$(jq -nc --arg r "$repositorio" --arg c "$canal" --arg s "$commit" \
+                    '{repository: $r, channel: $c, commit: $s}')"
+
+          status="$(curl --silent --show-error \
+                         --output "$RUNNER_TEMP/resposta-publicacao.json" \
+                         --write-out '%{http_code}' \
+                         --request POST "$base/api/channel-publication" \
+                         --header 'Content-Type: application/json' \
+                         --header "Authorization: Bearer $PUBLISH_SECRET" \
+                         --data "$corpo")"
+
+          # A resposta nunca ecoa o segredo — é o relato aceito, ou o motivo da
+          # recusa (repositório fora do mapa de canais, canal que aquele
+          # repositório não tem, SHA que não é commit completo).
+          echo "resposta ($status): $(cat "$RUNNER_TEMP/resposta-publicacao.json")"
+
+          case "$status" in
+            2*)
+              echo "publicação reportada: $repositorio / $canal / $commit"
+              ;;
+            *)
+              echo "::error::a squadia platform recusou o relato de publicação (HTTP $status) — sem ele, a tela de promoção mostra este canal como não publicado para sempre"
+              exit 1
+              ;;
+          esac

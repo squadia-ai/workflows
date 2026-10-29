@@ -67,6 +67,14 @@ on:
         description: "Imagem Docker do core squadia usada para rodar o papel"
         type: string
         default: "ghcr.io/squadia-ai/core:dev"
+      auth_mode:
+        description: "Modo de credencial do Claude: subscription (tenant interno, assinatura) ou api_key (tenant de cliente, exige o secret ANTHROPIC_API_KEY no executor; nunca usa a assinatura)"
+        type: string
+        default: "subscription"
+      environment_variant:
+        description: "Variante do ambiente de execucao: padrao ou flutter (SQD-686). Com flutter, a tag da imagem ganha o sufixo -flutter"
+        type: string
+        default: "padrao"
       instance:
         description: "Nome da instancia do papel na squadia.config.yml (default: a primeira)"
         type: string
@@ -92,7 +100,12 @@ on:
 
 jobs:
   run:
-    runs-on: ubuntu-latest
+    # Larger runner (achado ao vivo, 21/08/2026): QA execução é um dos dois
+    # papéis que de fato executam algo pesado (roda build/testes/cenários
+    # sobre o estado mesclado, `core/src/roles/qaExecutor/prompt.ts`), ao
+    # lado do Dev; Revisor e Refino nunca rodam build/teste, ficam no
+    # `ubuntu-latest` padrão.
+    runs-on: ubuntu-latest-m
     # Container jobs podem cair em sh (dash) como shell default; os scripts
     # destes workflows usam bash (contrato da imagem garante bash presente).
     defaults:
@@ -113,11 +126,26 @@ jobs:
     permissions:
       contents: read
     container:
-      image: ${{ inputs.image }}
+      # Variante flutter = mesma tag publicada com o sufixo -flutter (SQD-686).
+      # Valor diferente de flutter usa a imagem padrao aqui; o primeiro step
+      # rejeita o que estiver fora da lista fechada.
+      image: ${{ inputs.environment_variant == 'flutter' && format('{0}-flutter', inputs.image) || inputs.image }}
       credentials:
         username: x-access-token
         password: ${{ secrets.GHCR_PULL_TOKEN }}
     steps:
+      - name: Valida modo de credencial
+        env:
+          AUTH_MODE: ${{ inputs.auth_mode }}
+        run: |
+          [[ "$AUTH_MODE" == "subscription" || "$AUTH_MODE" == "api_key" ]] || { echo "auth_mode invalido (use subscription ou api_key)"; exit 1; }
+
+      - name: Valida variante do ambiente
+        env:
+          ENVIRONMENT_VARIANT: ${{ inputs.environment_variant }}
+        run: |
+          [[ "$ENVIRONMENT_VARIANT" == "padrao" || "$ENVIRONMENT_VARIANT" == "flutter" ]] || { echo "environment_variant invalida (use padrao ou flutter)"; exit 1; }
+
       - name: Valida issue key
         env:
           ISSUE_KEY: ${{ inputs.issue_key }}
@@ -168,6 +196,12 @@ jobs:
               }
               fs.appendFileSync(envFile, key + "<<" + delimiter + "\n" + strValue + "\n" + delimiter + "\n");
             }
+            // Executor criado pelo criar-tenant do platform guarda a credencial de
+            // serviço do tenant como SQUADIA_SERVICE_TOKEN; o core lê
+            // PLATFORM_API_TOKEN. Sem esta ponte, o tenant novo não fala com a API.
+            if (!secrets.PLATFORM_API_TOKEN && secrets.SQUADIA_SERVICE_TOKEN) {
+              fs.appendFileSync(envFile, "PLATFORM_API_TOKEN<<" + delimiter + "\n" + String(secrets.SQUADIA_SERVICE_TOKEN) + "\n" + delimiter + "\n");
+            }
           '
 
       - name: Executa o papel (qa-execute) — fase work
@@ -178,6 +212,7 @@ jobs:
           EXECUTION_ID: ${{ inputs.execution_id }}
           JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
           SQUADIA_CONFIG_PATH: squadia.config.yml
+          SQUADIA_AUTH_MODE: ${{ inputs.auth_mode }}
           TENANT_CLAUDE_MD_PATH: CLAUDE.md
           WORKSPACE_DIR: /tmp/squadia-workspace
           WORK_RESULT_PATH: /tmp/work-result.json
@@ -198,6 +233,7 @@ jobs:
           INSTANCE: ${{ inputs.instance }}
           EXECUTION_ID: ${{ inputs.execution_id }}
           SQUADIA_CONFIG_PATH: squadia.config.yml
+          SQUADIA_AUTH_MODE: ${{ inputs.auth_mode }}
           WORK_RESULT_PATH: /tmp/work-result.json
         run: |
           args=("$ISSUE_KEY")

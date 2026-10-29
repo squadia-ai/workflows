@@ -1,0 +1,146 @@
+name: Squadia - Avaliação de saltos (reusable)
+
+# Reusable workflow chamado pelo repo "ops" de um tenant via:
+#   uses: squadia-ai/workflows/.github/workflows/assess-hops.yml@dev
+#
+# Avalia os SALTOS DE PROMOÇÃO (develop → release, release → main...) de um
+# repositório do catálogo do tenant (SQD-779, ADR-026 §6.3, §9): pontas,
+# commits à frente/atrás, se o merge é limpo (mecanismo real de merge) e a
+# situação dos checks da ponta de origem. Roda DENTRO do ambiente do tenant,
+# por protocolo git, e envia à squadia platform SÓ metadados — SHAs,
+# contagens, chaves de item e caminhos. Código, mensagem de commit e
+# conteúdo de arquivo não saem daqui (ADR-002, ADR-012 §2).
+#
+# Não é papel de agente: sem Claude, sem item, sem execução aberta pelo
+# despacho. Quem dispara é o botão "reavaliar" da tela de promoção (a
+# plataforma faz `workflow_dispatch` no stub `assess-hops.yml` do `-ops`, que
+# chama este). Por isso um job só, sem fase de cleanup.
+#
+# Credenciais (todas do caller, nada escrito aqui — este repositório é
+# PÚBLICO): `PLATFORM_API_TOKEN` (credencial de serviço do tenant), a GitHub
+# App do refinamento técnico (`GH_APP_PRIVATE_KEY_LT` + as variables
+# `GH_APP_ID_LT`/`GH_INSTALLATION_ID_LT`) — a App de LEITURA da squad — e
+# `GHCR_PULL_TOKEN` só para o pull da imagem. `PLATFORM_API_BASE_URL` é
+# variable do caller.
+#
+# Nenhum `${{ }}` de dado externo dentro de `run:` (regra deste repo): todo
+# valor de input entra por `env:`.
+
+on:
+  workflow_call:
+    inputs:
+      repository:
+        description: "Nome LÓGICO do repositório no catálogo do tenant (ex.: core) cujos saltos avaliar"
+        type: string
+        required: true
+      image:
+        description: "Imagem Docker do core squadia que roda a avaliação"
+        type: string
+        default: "ghcr.io/squadia-ai/core:dev"
+      timeout_minutes:
+        # A avaliação é um ls-remote, um fetch e contas locais por salto, mais
+        # uma leitura de checks por salto — minutos, não dezenas. O teto fica
+        # abaixo do prazo em que a plataforma deixa de mostrar "avaliando"
+        # (20 min), para um job travado aparecer como "não voltou" na tela.
+        description: "Timeout do job, em minutos"
+        type: number
+        default: 15
+    # Declarados (ao contrário dos workflows de papel, que dependem de
+    # `secrets: inherit`): o stub gerado pela plataforma repassa um a um,
+    # porque `inherit` não vale entre organizações. Declarar também funciona
+    # com `inherit`.
+    secrets:
+      PLATFORM_API_TOKEN:
+        description: "Credencial de serviço do tenant na squadia platform"
+        required: false
+      SQUADIA_SERVICE_TOKEN:
+        description: "Mesmo papel de PLATFORM_API_TOKEN, no nome que o executor criado pela plataforma usa"
+        required: false
+      GH_APP_PRIVATE_KEY_LT:
+        description: "Chave privada da GitHub App de leitura (refinamento técnico)"
+        required: true
+      GHCR_PULL_TOKEN:
+        description: "Token só para o pull da imagem do core"
+        required: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    # Duas avaliações do mesmo repositório não rodam juntas; a segunda espera
+    # a primeira (não cancela: cada uma grava a sua medição, com a data dela).
+    concurrency:
+      group: squadia-assess-hops-${{ inputs.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    container:
+      image: ${{ inputs.image }}
+      credentials:
+        username: x-access-token
+        password: ${{ secrets.GHCR_PULL_TOKEN }}
+    steps:
+      - name: Valida repositório
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+        run: |
+          [[ "$REPOSITORY" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "repository invalido (use o nome logico do catalogo, ex.: core)"; exit 1; }
+
+      # Ordem importa: variables primeiro, secrets depois. Se houver colisao
+      # de nome entre uma Variable e um Secret do tenant, o secret vence
+      # porque escreve por ultimo no GITHUB_ENV.
+      - name: Exporta variables do tenant
+        env:
+          VARS_CONTEXT: ${{ toJSON(vars) }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const vars = JSON.parse(process.env.VARS_CONTEXT || "{}");
+            const delimiter = "__SQUADIA_EOF__";
+            const envFile = process.env.GITHUB_ENV;
+            for (const [key, value] of Object.entries(vars)) {
+              const strValue = String(value);
+              if (strValue.split("\n").includes(delimiter)) {
+                console.error("Erro: a variable " + key + " contem uma linha igual ao delimitador do heredoc (" + delimiter + "); abortando para nao corromper o GITHUB_ENV.");
+                process.exit(1);
+              }
+              fs.appendFileSync(envFile, key + "<<" + delimiter + "\n" + strValue + "\n" + delimiter + "\n");
+            }
+          '
+
+      - name: Exporta secrets do tenant
+        env:
+          SECRETS_CONTEXT: ${{ toJSON(secrets) }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const secrets = JSON.parse(process.env.SECRETS_CONTEXT || "{}");
+            const excluded = new Set(["github_token", "GHCR_PULL_TOKEN"]);
+            const delimiter = "__SQUADIA_EOF__";
+            const envFile = process.env.GITHUB_ENV;
+            for (const [key, value] of Object.entries(secrets)) {
+              if (excluded.has(key)) continue;
+              const strValue = String(value);
+              if (strValue.split("\n").includes(delimiter)) {
+                console.error("Erro: o segredo " + key + " contem uma linha igual ao delimitador do heredoc (" + delimiter + "); abortando para nao corromper o GITHUB_ENV.");
+                process.exit(1);
+              }
+              fs.appendFileSync(envFile, key + "<<" + delimiter + "\n" + strValue + "\n" + delimiter + "\n");
+            }
+            // Mesma ponte dos workflows de papel: o executor criado pela
+            // plataforma guarda a credencial de serviço como
+            // SQUADIA_SERVICE_TOKEN; o core lê PLATFORM_API_TOKEN.
+            if (!secrets.PLATFORM_API_TOKEN && secrets.SQUADIA_SERVICE_TOKEN) {
+              fs.appendFileSync(envFile, "PLATFORM_API_TOKEN<<" + delimiter + "\n" + String(secrets.SQUADIA_SERVICE_TOKEN) + "\n" + delimiter + "\n");
+            }
+          '
+
+      - name: Avalia os saltos
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+          WORKSPACE_DIR: /tmp/squadia-workspace
+        run: |
+          node /app/dist/entrypoints/assess-hops.js --repository "$REPOSITORY"
