@@ -12,6 +12,11 @@ name: Squadia - Refine (reusable)
 #   aceite, valor — zero técnica.
 # - `stage: technical` — refinamento TÉCNICO: subtasks, componentes,
 #   estimativa de modelo, avaliando código dos repos se preciso.
+#   O mesmo estágio também roda a REVISÃO DE COERÊNCIA da história, entre o
+#   refino de QA e o portão do PO (ADR-030, SQD-844): é a rodada do core que
+#   olha a fase do item e decide o trabalho. Nenhum input, stage ou stub novo
+#   no ops do tenant — o despacho manda o item ao mesmo workflow do refino
+#   técnico.
 #
 # Cada estágio é uma execução independente deste workflow, despachada pelo
 # orquestrador como qualquer papel (business e technical são faixas
@@ -84,7 +89,7 @@ on:
       stage:
         # Sem default de proposito: o caller TEM que escolher o estágio
         # (business|technical) — validado no primeiro step do job "work".
-        description: "Estágio do refinamento (business|technical) — ADR-017"
+        description: "Estágio do refinamento (business|technical) — ADR-017; technical também cobre a revisão de coerência (ADR-030)"
         type: string
         required: true
       image:
