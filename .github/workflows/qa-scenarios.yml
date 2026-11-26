@@ -170,6 +170,14 @@ jobs:
         run: |
           [[ "$AUTH_MODE" == "subscription" || "$AUTH_MODE" == "api_key" ]] || { echo "auth_mode invalido (use subscription ou api_key)"; exit 1; }
 
+      # Linha de base dos containers do daemon do host (SQD-1535, decisao do PO): o que
+      # ja existia antes da rodada nao e tocado pela limpeza final.
+      - name: Registra os containers existentes antes da rodada (flutter-go)
+        if: inputs.environment_variant == 'flutter-go'
+        continue-on-error: true
+        run: |
+          docker ps -aq > /tmp/squadia-containers-iniciais.txt 2>/dev/null || : > /tmp/squadia-containers-iniciais.txt
+
       - name: Valida variante do ambiente
         env:
           ENVIRONMENT_VARIANT: ${{ inputs.environment_variant }}
@@ -287,4 +295,10 @@ jobs:
           [[ -z "$vols" ]] || docker volume rm -f $vols || true
           nets="$(docker network ls -q --filter "label=com.docker.compose.project=$PROJETO" || true)"
           [[ -z "$nets" ]] || docker network rm $nets || true
+          # Limpeza final: remove todo container criado durante a rodada (que nao estava
+          # na linha de base), mesmo que tenha sido subido fora do projeto compose.
+          if [[ -f /tmp/squadia-containers-iniciais.txt ]]; then
+            novos="$(docker ps -aq 2>/dev/null | grep -v -x -F -f /tmp/squadia-containers-iniciais.txt || true)"
+            [[ -z "$novos" ]] || docker rm -f -v $novos || true
+          fi
           exit 0

@@ -37,7 +37,7 @@ O `refine.yml` voltou ao modelo 2-jobs padrão na ADR-017 — o Quig é despacha
 
 ### Variantes do ambiente (`environment_variant`)
 
-`padrao`, `flutter` (SQD-686) e `flutter-go` (SQD-1535: flutter + Go + cliente Docker com compose). Fora `padrao`, a tag da imagem ganha o sufixo `-<variante>`; valor desconhecido falha no primeiro step. **Só a `flutter-go`** recebe o socket do daemon do host no container do job (`container.options`), e a rodada usa um projeto compose próprio (`COMPOSE_PROJECT_NAME`) que um passo `if: always()` derruba ao final. O acesso equivale a root na VM do runner (efêmero); `scripts/verificar-docker-por-variante.sh`, chamado pelo `ci.yml` deste repo em pull request, falha se ele aparecer em qualquer outra variante.
+`padrao`, `flutter` (SQD-686) e `flutter-go` (SQD-1535: flutter + Go + cliente Docker com compose). Fora `padrao`, a tag da imagem ganha o sufixo `-<variante>`; valor desconhecido falha no primeiro step. **Só a `flutter-go`** recebe o socket do daemon do host no container do job (`container.options`), e a rodada usa um projeto compose próprio (`COMPOSE_PROJECT_NAME`) que um passo `if: always()` derruba ao final; esse passo também remove todo container criado durante a rodada (linha de base de `docker ps -aq` registrada no início). O acesso equivale a root na VM do runner (efêmero); `scripts/verificar-docker-por-variante.sh`, chamado pelo `ci.yml` deste repo em pull request, falha se ele aparecer em qualquer outra variante.
 
 ### Contrato com a imagem do core
 
