@@ -35,6 +35,10 @@ Os cinco workflows de PAPEL rodam dentro de um `container:` com a imagem do core
 
 O `refine.yml` voltou ao modelo 2-jobs padrão na ADR-017 — o Quig é despachado pelo orquestrador como qualquer papel. Ele tem um input obrigatório a mais, `stage` (`business` ou `technical`), que seleciona o estágio do pipeline de refinamento e entra no concurrency group (runs business e technical da mesma issue não se cancelam/enfileiram entre si).
 
+### Variantes do ambiente (`environment_variant`)
+
+`padrao`, `flutter` (SQD-686) e `flutter-go` (SQD-1535: flutter + Go + cliente Docker com compose). Fora `padrao`, a tag da imagem ganha o sufixo `-<variante>`; valor desconhecido falha no primeiro step. **Só a `flutter-go`** recebe o socket do daemon do host no container do job (`container.options`), e a rodada usa um projeto compose próprio (`COMPOSE_PROJECT_NAME`) que um passo `if: always()` derruba ao final. O acesso equivale a root na VM do runner (efêmero); `scripts/verificar-docker-por-variante.sh`, chamado pelo `ci.yml` deste repo em pull request, falha se ele aparecer em qualquer outra variante.
+
 ### Contrato com a imagem do core
 
 - Imagem default: `ghcr.io/squadia-ai/core:dev` (privada no GHCR; pull autenticado com o secret `GHCR_PULL_TOKEN`).

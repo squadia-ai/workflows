@@ -78,7 +78,7 @@ on:
         type: string
         default: "subscription"
       environment_variant:
-        description: "Variante do ambiente de execucao: padrao ou flutter (SQD-686). Com flutter, a tag da imagem ganha o sufixo -flutter"
+        description: "Variante do ambiente de execucao: padrao, flutter (SQD-686) ou flutter-go (SQD-1535). Fora padrao, a tag da imagem ganha o sufixo -<variante>. So a flutter-go recebe acesso ao Docker do host"
         type: string
         default: "padrao"
       instance:
@@ -152,14 +152,25 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
+    env:
+      # Projeto compose proprio da rodada (SQD-1535): so na flutter-go, derivado do
+      # run (minusculo, como o compose exige). O passo de derrubada ao final usa o mesmo nome.
+      COMPOSE_PROJECT_NAME: ${{ inputs.environment_variant == 'flutter-go' && format('squadia-{0}-{1}', github.run_id, github.run_attempt) || '' }}
     container:
-      # Variante flutter = mesma tag publicada com o sufixo -flutter (SQD-686).
-      # Valor diferente de flutter usa a imagem padrao aqui; o primeiro step
-      # rejeita o que estiver fora da lista fechada.
-      image: ${{ inputs.environment_variant == 'flutter' && format('{0}-flutter', inputs.image) || inputs.image }}
+      # Variante flutter/flutter-go = mesma tag publicada com o sufixo -<variante>
+      # (SQD-686, SQD-1535). Valor fora da lista usa a imagem padrao aqui; o
+      # primeiro step rejeita o que estiver fora da lista fechada.
+      image: ${{ (inputs.environment_variant == 'flutter' || inputs.environment_variant == 'flutter-go') && format('{0}-{1}', inputs.image, inputs.environment_variant) || inputs.image }}
       credentials:
         username: x-access-token
         password: ${{ secrets.GHCR_PULL_TOKEN }}
+      # Acesso ao Docker do host (SQD-1535): o socket do daemon do runner efemero
+      # e montado SOMENTE na flutter-go; as outras variantes nao recebem nada.
+      # Esta e a UNICA linha dos workflows que concede esse acesso (equivale a root
+      # na VM do runner) e o CI deste repo confere o texto exato
+      # (scripts/verificar-docker-por-variante.sh). O executor roda como root no
+      # container, entao nao precisa de --group-add. Nao e privileged nem DinD.
+      options: ${{ inputs.environment_variant == 'flutter-go' && '--volume /var/run/docker.sock:/var/run/docker.sock' || '' }}
     steps:
       - name: Valida modo de credencial
         env:
@@ -171,7 +182,7 @@ jobs:
         env:
           ENVIRONMENT_VARIANT: ${{ inputs.environment_variant }}
         run: |
-          [[ "$ENVIRONMENT_VARIANT" == "padrao" || "$ENVIRONMENT_VARIANT" == "flutter" ]] || { echo "environment_variant invalida (use padrao ou flutter)"; exit 1; }
+          [[ "$ENVIRONMENT_VARIANT" == "padrao" || "$ENVIRONMENT_VARIANT" == "flutter" || "$ENVIRONMENT_VARIANT" == "flutter-go" ]] || { echo "environment_variant invalida (use padrao, flutter ou flutter-go)"; exit 1; }
 
       - name: Valida issue key
         env:
@@ -267,3 +278,21 @@ jobs:
           [[ -n "$INSTANCE" ]] && args+=(--instance "$INSTANCE")
           [[ -n "$EXECUTION_ID" ]] && args+=(--execution-id "$EXECUTION_ID")
           node /app/dist/entrypoints/review.js "${args[@]}" --phase cleanup
+
+      # Derrubada dos containers da rodada (SQD-1535) — so flutter-go, e mesmo que a
+      # rodada falhe (always()). Nunca falha a rodada: sem containers e sem docker e ok.
+      - name: Derruba os containers da rodada (flutter-go)
+        if: always() && inputs.environment_variant == 'flutter-go'
+        continue-on-error: true
+        env:
+          PROJETO: ${{ env.COMPOSE_PROJECT_NAME }}
+        run: |
+          [[ -n "$PROJETO" ]] || exit 0
+          docker compose -p "$PROJETO" down -v --remove-orphans || true
+          ids="$(docker ps -aq --filter "label=com.docker.compose.project=$PROJETO" || true)"
+          [[ -z "$ids" ]] || docker rm -f -v $ids || true
+          vols="$(docker volume ls -q --filter "label=com.docker.compose.project=$PROJETO" || true)"
+          [[ -z "$vols" ]] || docker volume rm -f $vols || true
+          nets="$(docker network ls -q --filter "label=com.docker.compose.project=$PROJETO" || true)"
+          [[ -z "$nets" ]] || docker network rm $nets || true
+          exit 0
