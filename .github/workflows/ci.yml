@@ -1,0 +1,21 @@
+name: CI
+
+# Verificação automática, sem rede e sem segredo (SQD-1535): o acesso ao Docker do
+# host só pode existir na variante flutter-go dos workflows de papel.
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+jobs:
+  isolamento-do-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Testa o verificador
+        run: scripts/testar-verificacao-docker.sh
+      - name: Confere os workflows de papel
+        run: scripts/verificar-docker-por-variante.sh
