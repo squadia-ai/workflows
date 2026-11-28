@@ -112,6 +112,13 @@ on:
         description: "uuid da execução aberta pela plataforma (ADR-007 §5) — o papel a fecha ao terminar"
         type: string
         default: ""
+      runs_on:
+        # Runners híbridos (migração para o Google Cloud): quem chama
+        # escolhe o runner — "ubuntu-latest" (GitHub, padrão e reserva) ou o
+        # rótulo do runner self-hosted efêmero. Sem input, nada muda.
+        description: "Rótulo do runner (padrão ubuntu-latest; self-hosted pelo rótulo dele)"
+        type: string
+        default: "ubuntu-latest"
       timeout_minutes:
         # Invariante (SQD-52): este timeout tem que ser MAIOR que o
         # claudeTimeoutMinutes do core (default 60 min, fora deste repo).
@@ -151,7 +158,7 @@ on:
 
 jobs:
   run:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     # Container jobs podem cair em sh (dash) como shell default; os scripts
     # destes workflows usam bash (contrato da imagem garante bash presente).
     defaults:
